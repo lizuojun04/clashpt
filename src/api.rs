@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{collections::BTreeMap, io::{BufRead, BufReader, Read}, path::Path, time::Duration};
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Endpoint {
     pub controller_port: u16,
     pub mixed_port: u16,

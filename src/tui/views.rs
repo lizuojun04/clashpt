@@ -1,11 +1,11 @@
 use super::{App, Overview, Page, Rate, help, theme::Theme};
-use crate::settings::Settings;
+use crate::{settings::Settings, status};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Row, Table, Tabs},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph, Row, Table, Tabs, Wrap},
 };
 
 pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>, settings: &Settings) {
@@ -29,12 +29,36 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>, settings: &Settings) {
         Page::Rules => rules(frame, body, app, theme),
         Page::Conns => connections(frame, body, app, theme),
         Page::Logs => logs(frame, body, app, theme),
+        Page::Profiles => profiles(frame, body, app, settings),
     }
 
-    frame.render_widget(Paragraph::new(clean(app.status().as_ref())).style(theme.status()), status);
+    let (message, success) = app.status();
+    let mut notice = Vec::with_capacity(2);
+    if success && !settings.indicators.running.is_empty() {
+        notice.push(Span::styled(format!("{} ", settings.indicators.running), Style::new().fg(theme.service_indicator(true))));
+    }
+    notice.push(Span::styled(clean(message.as_ref()), theme.status()));
+    frame.render_widget(Paragraph::new(Line::from(notice)), status);
     if let Some(offset) = &mut app.help_offset {
         help::draw(frame, page, offset, theme);
     }
+    if let Some(name) = &app.delete_confirmation {
+        confirm_delete(frame, name, theme);
+    }
+}
+
+fn confirm_delete(frame: &mut Frame<'_>, name: &str, theme: &Theme) {
+    let area = frame.area();
+    let prompt = Line::from(format!("Delete {:?}?", clean(name)));
+    let keys = Line::from("y Delete   n / Esc Cancel");
+    let width = (prompt.width().max(keys.width()) + 6).min(usize::from(area.width)) as u16;
+    let height = area.height.min(6);
+    let popup = Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height);
+
+    frame.render_widget(Clear, popup);
+    let block = panel(theme, " Delete profile ", true).style(theme.popup()).border_style(theme.popup_border());
+    frame.render_widget(Paragraph::new(vec![prompt, Line::default(), keys])
+        .alignment(Alignment::Center).wrap(Wrap { trim: true }).block(block), popup);
 }
 
 fn panel(theme: &Theme, title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
@@ -154,9 +178,9 @@ fn proxies(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme, symb
         }).collect::<Vec<_>>();
         (" All nodes ".to_string(), rows)
     };
-    frame.render_stateful_widget(List::new(groups).block(panel(theme, " Strategy groups ", !app.node_focus))
+    frame.render_stateful_widget(List::new(groups).block(panel(theme, " Strategy groups ", !app.node_focus).padding(Padding::new(1, 0, 0, 0)))
         .highlight_style(theme.selection(!app.node_focus)), left, &mut app.group);
-    frame.render_stateful_widget(List::new(rows).block(panel(theme, title, app.node_focus))
+    frame.render_stateful_widget(List::new(rows).block(panel(theme, title, app.node_focus).padding(Padding::new(1, 0, 0, 0)))
         .highlight_style(theme.selection(app.node_focus)), right, &mut app.node);
 }
 
@@ -167,7 +191,7 @@ fn proxy_row(theme: &Theme, name: &str, kind: &str, delay: Option<u64>, indicato
         Some(ms) => format!("{ms} ms"),
     };
     ListItem::new(Line::from(vec![
-        Span::styled(format!(" {indicator}"), theme.active_node_indicator()),
+        Span::styled(indicator.to_owned(), theme.active_node_indicator()),
         Span::styled(format!("{value:>8}  "), theme.latency(delay)),
         Span::raw(clean(name)),
         Span::styled(format!("  {}", clean(kind)), theme.secondary()),
@@ -180,7 +204,7 @@ fn rules(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme) {
     ]));
     let table = Table::new(rows, [Constraint::Length(5), Constraint::Percentage(22), Constraint::Fill(2), Constraint::Fill(1)])
         .header(header(theme, ["#", "TYPE", "MATCH", "POLICY"])).row_highlight_style(theme.selection(true))
-        .block(panel(theme, format!(" Rules · {} ", app.rules.len()), true));
+        .block(panel(theme, format!(" Rules · {} ", app.rules.len()), true).padding(Padding::new(1, 0, 0, 0)));
     frame.render_stateful_widget(table, area, &mut app.rules_cursor);
 }
 
@@ -203,10 +227,31 @@ fn connections(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme) 
         Constraint::Fill(3), Constraint::Length(10), Constraint::Length(10),
     ]).header(header(theme, ["TYPE", "SOURCE", "DESTINATION", "RULE", "PROXY CHAIN", "DOWN", "UP"]))
         .row_highlight_style(theme.selection(true))
-        .block(panel(theme, format!(" Active connections · {} ", app.connections.connections.len()), true));
+        .block(panel(theme, format!(" Active connections · {} ", app.connections.connections.len()), true).padding(Padding::new(1, 0, 0, 0)));
     frame.render_stateful_widget(table, area, &mut app.conn_cursor);
     if app.connections.connections.is_empty() {
         empty(frame, area, theme, "No active connections");
+    }
+}
+
+fn profiles(frame: &mut Frame<'_>, area: Rect, app: &mut App, settings: &Settings) {
+    let theme = &settings.theme;
+    let color = Style::new().fg(theme.profile_indicator());
+    let rows = status::profile_rows(&app.profiles, settings.indicators.active_profile())
+        .into_iter().map(|(_, marker, text)| ListItem::new(Line::from(vec![
+            Span::styled(marker, color),
+            Span::raw(clean(&text)),
+        ])));
+    let list = List::new(rows).block(panel(theme, " Saved profiles ", true).padding(Padding::new(1, 0, 0, 0)))
+        .highlight_style(theme.selection(true));
+    frame.render_stateful_widget(list, area, &mut app.profile_cursor);
+    if app.profiles.is_empty() {
+        let label = if app.system_mode {
+            "System profiles are applied with sudo clashpt system apply"
+        } else {
+            "Save a profile with clashpt profile import or profile subscribe"
+        };
+        empty(frame, area, theme, label);
     }
 }
 

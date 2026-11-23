@@ -15,7 +15,8 @@ pub(crate) struct Output {
 }
 
 pub(crate) fn print(port: Option<u16>, options: &Output) -> Result<()> {
-    let mut output = io::stdout().lock();
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
     let lines = if let Some(port) = port {
         let http = format!("http://127.0.0.1:{port}");
         let socks = format!("socks5h://127.0.0.1:{port}");
@@ -47,6 +48,13 @@ pub(crate) fn print(port: Option<u16>, options: &Output) -> Result<()> {
         }
         Ok(())
     } else {
-        status::write_box(&mut output, lines.into_iter().map(|line| (line.clone(), line)).collect())
+        let rows = lines.into_iter().enumerate().map(|(index, line)| {
+            if options.applied && index == 0 {
+                status::operation_line(port.is_some(), &line, &stdout)
+            } else {
+                (line.clone(), line)
+            }
+        }).collect();
+        status::write_box(&mut output, rows)
     }
 }

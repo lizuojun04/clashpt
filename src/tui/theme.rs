@@ -12,6 +12,7 @@ pub(crate) struct Theme {
     accent: Color,
     active_tab_text: Color,
     active_node_indicator: Color,
+    active_profile_indicator: Option<Color>,
     running_indicator: Color,
     stopped_indicator: Color,
     status_text: Color,
@@ -65,6 +66,10 @@ impl Theme {
 
     pub(super) fn active_node_indicator(&self) -> Style {
         Style::new().fg(self.active_node_indicator)
+    }
+
+    pub(crate) fn profile_indicator(&self) -> Color {
+        self.active_profile_indicator.unwrap_or(self.running_indicator)
     }
 
     pub(crate) fn service_indicator(&self, running: bool) -> Color {

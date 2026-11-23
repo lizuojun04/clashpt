@@ -31,7 +31,7 @@ struct Cli {
 enum Command {
     /// Open the interactive Mihomo dashboard
     Tui {
-        /// Read ClashPT settings from this YAML file (default: ~/.config/clashpt.yaml)
+        /// Read ClashPT settings from this YAML file (default: ~/.config/clashpt/clashpt.yaml)
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -46,7 +46,7 @@ enum Command {
     Status {
         #[arg(long)]
         json: bool,
-        /// Read status indicator settings from this YAML file (default: ~/.config/clashpt.yaml)
+        /// Read status indicator settings from this YAML file (default: ~/.config/clashpt/clashpt.yaml)
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -71,17 +71,35 @@ enum Proxy {
 
 #[derive(Subcommand)]
 enum Profile {
-    /// Import a complete Mihomo configuration file
-    Import { path: PathBuf },
-    /// Import a URL returning a complete Mihomo configuration
+    /// Save a complete Mihomo configuration file
+    Import {
+        path: PathBuf,
+        /// Profile name (default: reuse the source or pick a new name)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Save a URL returning a complete Mihomo configuration
     Subscribe {
         /// Omit the URL to read it from standard input
         url: Option<String>,
+        /// Profile name (default: reuse the source or pick a new name)
+        #[arg(long)]
+        name: Option<String>,
     },
-    /// Fetch and apply the current subscription again
-    Update,
-    /// Write the original configuration to standard output
-    Export,
+    /// List saved profiles and show which one is active
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Activate a saved profile
+    Use { name: String },
+    /// Delete a saved profile
+    #[command(visible_alias = "remove")]
+    Delete { name: String },
+    /// Download a saved subscription again (default: the active profile)
+    Update { name: Option<String> },
+    /// Write a profile's original YAML to standard output (default: the active profile)
+    Export { name: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -111,8 +129,7 @@ enum System {
     ServeApi { credentials: PathBuf, socket: PathBuf },
 }
 
-fn run() -> Result<()> {
-    let cli = Cli::parse();
+fn run(cli: Cli) -> Result<()> {
     if let Command::System(System::Apply { config, uid, settings }) = cli.command {
         let uid = uid.or_else(|| std::env::var("SUDO_UID").ok()?.parse().ok())
             .context("pass --uid with the UID of the user who will control the service")?;
@@ -141,13 +158,13 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Tui { config } => {
-            let (endpoint, workers) = if cli.system {
-                let settings = system::client_settings()?;
-                (settings.endpoint, Some(settings.workers))
+            let (backend, workers) = if let Some(service) = &service {
+                (tui::Backend::user(service.clone()), None)
             } else {
-                (endpoint()?, None)
+                let settings = system::client_settings()?;
+                (tui::Backend::system(Client::new(settings.endpoint)?), Some(settings.workers))
             };
-            tui::run(Client::new(endpoint)?, config.as_deref(), workers)?;
+            tui::run(backend, config.as_deref(), workers)?;
         }
         Command::Start => {
             match &service {
@@ -181,8 +198,11 @@ fn run() -> Result<()> {
                 bail!("use profile commands in user mode, then run sudo clashpt system apply <file>");
             };
             match profile {
-                Profile::Import { path } => service.import(&path)?,
-                Profile::Subscribe { url } => {
+                Profile::Import { path, name } => {
+                    let name = service.import(&path, name.as_deref())?;
+                    status::print_success(&format!("Saved profile {name}"))?;
+                }
+                Profile::Subscribe { url, name } => {
                     let url = match url {
                         Some(url) => url,
                         None => {
@@ -192,10 +212,30 @@ fn run() -> Result<()> {
                         }
                     };
                     ensure!(!url.is_empty(), "provide a subscription URL");
-                    service.subscribe(url)?;
+                    let name = service.subscribe(url, name.as_deref())?;
+                    status::print_success(&format!("Saved profile {name}"))?;
                 }
-                Profile::Update => service.update()?,
-                Profile::Export => io::stdout().lock().write_all(&service.export()?)?,
+                Profile::List { json } => {
+                    let profiles = service.list_profiles()?;
+                    if json {
+                        println!("{}", serde_json::to_string(&profiles)?);
+                    } else {
+                        status::print_profiles(&profiles)?;
+                    }
+                }
+                Profile::Use { name } => {
+                    service.activate(&name)?;
+                    status::print_success(&format!("Active profile: {}", name.trim()))?;
+                }
+                Profile::Delete { name } => {
+                    let deleted = service.delete_profile(&name)?;
+                    status::print_success(&deleted.message(&name))?;
+                }
+                Profile::Update { name } => {
+                    let name = service.update(name.as_deref())?;
+                    status::print_success(&format!("Updated profile {name}"))?;
+                }
+                Profile::Export { name } => io::stdout().lock().write_all(&service.export(name.as_deref())?)?,
             }
         }
         Command::Nodes(command) => {
@@ -212,7 +252,10 @@ fn run() -> Result<()> {
                         }
                     }
                 }
-                Nodes::Select { group, node } => client.select(&group, &node)?,
+                Nodes::Select { group, node } => {
+                    client.select(&group, &node)?;
+                    status::print_success("Node switched")?;
+                }
             }
         }
         Command::System(_) => unreachable!(),
@@ -221,8 +264,14 @@ fn run() -> Result<()> {
 }
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("clashpt: {error:#}");
+    let cli = Cli::parse();
+    let profile_operation = matches!(&cli.command,
+        Command::Profile(Profile::Import { .. } | Profile::Subscribe { .. } | Profile::Delete { .. }));
+    if let Err(error) = run(cli) {
+        let message = format!("clashpt: {error:#}");
+        if !profile_operation || status::print_failure(&message).is_err() {
+            eprintln!("{message}");
+        }
         std::process::exit(1);
     }
 }

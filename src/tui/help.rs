@@ -9,7 +9,7 @@ use ratatui::{
 type Shortcut = (&'static str, &'static str);
 
 const COMMON: &[Shortcut] = &[
-    ("1–5", "Switch tabs"),
+    ("1–6", "Switch tabs"),
     ("r", "Refresh this page"),
     ("q", "Quit ClashPT"),
     ("Enter / Esc / ?", "Close shortcuts"),
@@ -34,6 +34,12 @@ fn page_keys(page: Page) -> &'static [Shortcut] {
         Page::Conns => &[
             ("↑ ↓ / k j", "Scroll active connections"),
             ("PgUp / PgDn", "Move 12 rows"),
+        ],
+        Page::Profiles => &[
+            ("↑ ↓ / k j", "Highlight profile"),
+            ("PgUp / PgDn", "Move 12 rows"),
+            ("Enter", "Activate profile"),
+            ("Delete / x", "Delete profile"),
         ],
         Page::Logs => &[
             ("↑ ↓ / k j", "Scroll logs"),

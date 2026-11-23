@@ -5,6 +5,7 @@ latency_test:
 # Display symbols for the TUI and status command.
 indicators:
   active_node: "●"
+  active_profile: null      # Inherit indicators.running
   running: "●"
   stopped: "●"
 
@@ -17,6 +18,7 @@ theme:
   accent: cyan
   active_tab_text: "#ff9e64"
   active_node_indicator: cyan
+  active_profile_indicator: null  # Inherit theme.running_indicator
   running_indicator: "#13d84a"
   stopped_indicator: red
   status_text: yellow

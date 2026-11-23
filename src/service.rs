@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     net::TcpListener,
@@ -13,17 +14,79 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Profile {
     pub endpoint: Endpoint,
     generation: String,
     source: Source,
+    #[serde(default)]
+    core: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 enum Source {
-    File { base: PathBuf },
+    File {
+        base: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<PathBuf>,
+    },
     Subscription { url: String },
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct Profiles {
+    active: Option<String>,
+    profiles: BTreeMap<String, Profile>,
+}
+
+impl Profiles {
+    fn active(&self) -> Option<&Profile> {
+        self.active.as_ref().and_then(|name| self.profiles.get(name))
+    }
+
+    fn name(&self, name: Option<&str>) -> Result<String> {
+        let name = name.or(self.active.as_deref()).unwrap_or("default").trim();
+        ensure!(!name.is_empty() && !name.chars().any(char::is_control),
+            "profile name must be nonempty and contain no control characters");
+        Ok(name.to_owned())
+    }
+
+    fn get(&self, name: &str) -> Result<&Profile> {
+        self.profiles.get(name).with_context(|| format!("profile {name:?} was not found"))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredProfiles {
+    Current(Profiles),
+    Legacy(Profile),
+}
+
+#[derive(Serialize)]
+pub struct ProfileInfo {
+    pub name: String,
+    pub source: &'static str,
+    pub active: bool,
+    pub mixed_port: u16,
+}
+
+pub struct DeletedProfile {
+    pub active: Option<String>,
+    pub active_changed: bool,
+}
+
+impl DeletedProfile {
+    pub fn message(&self, name: &str) -> String {
+        let mut message = format!("Deleted profile {}", name.trim());
+        if self.active_changed {
+            match &self.active {
+                Some(active) => message.push_str(&format!(" · Active profile: {active}")),
+                None => message.push_str(" · No active profile"),
+            }
+        }
+        message
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -33,6 +96,7 @@ struct Process {
     boot_id: String,
 }
 
+#[derive(Clone)]
 pub struct Service {
     dir: PathBuf,
     mihomo: PathBuf,
@@ -66,8 +130,31 @@ impl Service {
         self.dir.join("process.json")
     }
 
+    fn profiles(&self) -> Result<Profiles> {
+        match optional_json(&self.profile_path())? {
+            Some(StoredProfiles::Current(profiles)) => Ok(profiles),
+            Some(StoredProfiles::Legacy(profile)) => {
+                let name = String::from("default");
+                Ok(Profiles { active: Some(name.clone()), profiles: BTreeMap::from([(name, profile)]) })
+            }
+            None => Ok(Profiles::default()),
+        }
+    }
+
     pub fn profile(&self) -> Result<Option<Profile>> {
-        optional_json(&self.profile_path())
+        Ok(self.profiles()?.active().cloned())
+    }
+
+    pub fn list_profiles(&self) -> Result<Vec<ProfileInfo>> {
+        let Profiles { active, profiles } = self.profiles()?;
+        Ok(profiles.into_iter().map(|(name, profile)| {
+            let selected = active.as_ref() == Some(&name);
+            let source = match profile.source {
+                Source::File { .. } => "file",
+                Source::Subscription { .. } => "subscription",
+            };
+            ProfileInfo { name, source, active: selected, mixed_port: profile.endpoint.mixed_port }
+        }).collect())
     }
 
     fn config_path(&self, profile: &Profile) -> PathBuf {
@@ -76,8 +163,12 @@ impl Service {
 
     fn command(&self, profile: &Profile) -> Command {
         let mut command = Command::new(&self.mihomo);
-        command.arg("-d").arg(self.dir.join("core")).arg("-f").arg(self.config_path(profile));
-        if let Source::File { base } = &profile.source {
+        let mut core_dir = self.dir.join("core");
+        if let Some(core) = &profile.core {
+            core_dir.push(core);
+        }
+        command.arg("-d").arg(core_dir).arg("-f").arg(self.config_path(profile));
+        if let Source::File { base, .. } = &profile.source {
             command.env("SAFE_PATHS", base);
         } else {
             command.env_remove("SAFE_PATHS");
@@ -85,47 +176,136 @@ impl Service {
         command
     }
 
-    pub fn import(&self, path: &Path) -> Result<()> {
+    pub fn import(&self, path: &Path, name: Option<&str>) -> Result<String> {
         let path = path.canonicalize().with_context(|| format!("resolve {}", path.display()))?;
-        let raw = config::local(&path)?;
         let base = path.parent().context("configuration has no parent directory")?.to_path_buf();
         let _lock = self.lock()?;
-        self.apply(&raw, Source::File { base })
+        let raw = config::local(&path)?;
+        self.save(self.profiles()?, name, &raw, Source::File { base, path: Some(path) })
     }
 
-    pub fn subscribe(&self, url: String) -> Result<()> {
+    pub fn subscribe(&self, url: String, name: Option<&str>) -> Result<String> {
         let _lock = self.lock()?;
+        let profiles = self.profiles()?;
+        let url = url.trim().to_owned();
         let raw = config::download(&url)?;
-        self.apply(&raw, Source::Subscription { url })
+        self.save(profiles, name, &raw, Source::Subscription { url })
     }
 
-    pub fn update(&self) -> Result<()> {
+    pub fn update(&self, name: Option<&str>) -> Result<String> {
         let _lock = self.lock()?;
-        let profile = self.profile()?.context("subscribe to a configuration first")?;
-        let Source::Subscription { url } = profile.source else {
-            bail!("current configuration was imported from a local file");
+        let profiles = self.profiles()?;
+        let name = profiles.name(name)?;
+        let Source::Subscription { url } = &profiles.get(&name)?.source else {
+            bail!("profile {name:?} was imported from a local file");
         };
+        let url = url.clone();
         let raw = config::download(&url)?;
-        self.apply(&raw, Source::Subscription { url })
+        self.save(profiles, Some(&name), &raw, Source::Subscription { url })
     }
 
-    pub fn export(&self) -> Result<Vec<u8>> {
+    pub fn export(&self, name: Option<&str>) -> Result<Vec<u8>> {
         let _lock = self.lock()?;
-        let profile = self.profile()?.context("import a configuration first")?;
-        config::local(&self.dir.join(profile.generation).join("source.yaml"))
+        let profiles = self.profiles()?;
+        let profile = profiles.get(&profiles.name(name)?)?;
+        config::local(&self.dir.join(&profile.generation).join("source.yaml"))
     }
 
-    fn apply(&self, raw: &[u8], source: Source) -> Result<()> {
-        let previous = self.profile()?;
+    pub fn activate(&self, name: &str) -> Result<bool> {
+        let _lock = self.lock()?;
+        let mut profiles = self.profiles()?;
+        let name = profiles.name(Some(name))?;
+        profiles.get(&name)?;
+        if profiles.active.as_ref() == Some(&name) {
+            return Ok(false);
+        }
+        let previous = profiles.active().cloned();
+        profiles.active = Some(name);
+        self.commit(previous.as_ref(), &profiles)?;
+        Ok(true)
+    }
+
+    pub fn delete_profile(&self, name: &str) -> Result<DeletedProfile> {
+        let _lock = self.lock()?;
+        let mut profiles = self.profiles()?;
+        let name = profiles.name(Some(name))?;
+        let previous = profiles.active().cloned();
+        let removed = profiles.profiles.remove(&name)
+            .with_context(|| format!("profile {name:?} was not found"))?;
+        let active_changed = profiles.active.as_ref() == Some(&name);
+        if active_changed {
+            profiles.active = profiles.profiles.keys().next().cloned();
+        }
+        self.commit(previous.as_ref(), &profiles)?;
+
+        remove_profile_dir(&self.dir, &removed.generation);
+        if let Some(core) = removed.core {
+            remove_profile_dir(&self.dir.join("core"), &core);
+        }
+        Ok(DeletedProfile { active: profiles.active, active_changed })
+    }
+
+    fn save_name(&self, profiles: &Profiles, name: Option<&str>, source: &Source, raw: &[u8]) -> Result<String> {
+        if let Some(name) = name {
+            return profiles.name(Some(name));
+        }
+        if profiles.profiles.is_empty() {
+            return Ok("default".into());
+        }
+
+        let same_source = |profile: &Profile| match (&profile.source, source) {
+            (Source::Subscription { url: old }, Source::Subscription { url: new }) => old == new,
+            (Source::File { path: Some(old), .. }, Source::File { path: Some(new), .. }) => old == new,
+            (Source::File { base: old, path: None }, Source::File { base: new, .. }) if old == new => {
+                config::local(&self.dir.join(&profile.generation).join("source.yaml"))
+                    .is_ok_and(|saved| saved == raw)
+            }
+            _ => false,
+        };
+        if let Some(active) = &profiles.active && profiles.active().is_some_and(same_source) {
+            return Ok(active.clone());
+        }
+        if let Some((existing, _)) = profiles.profiles.iter().find(|(_, profile)| same_source(profile)) {
+            return Ok(existing.clone());
+        }
+
+        let base = match source {
+            Source::File { path, .. } => path.as_deref().and_then(Path::file_stem)
+                .and_then(|name| name.to_str()).map(str::trim)
+                .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
+                .unwrap_or("file"),
+            Source::Subscription { .. } => "subscription",
+        };
+        if !profiles.profiles.contains_key(base) {
+            return Ok(base.to_owned());
+        }
+        (2..).map(|suffix| format!("{base}-{suffix}"))
+            .find(|name| !profiles.profiles.contains_key(name))
+            .context("could not choose a profile name")
+    }
+
+    fn save(&self, mut profiles: Profiles, name: Option<&str>, raw: &[u8], source: Source) -> Result<String> {
+        let name = self.save_name(&profiles, name, &source, raw)?;
+        let existing = profiles.profiles.get(&name);
+        let previous = profiles.active().cloned();
+        let previous_endpoint = existing.or(previous.as_ref()).map(|profile| &profile.endpoint);
         let base = match &source {
-            Source::File { base } => Some(base.as_path()),
+            Source::File { base, .. } => Some(base.as_path()),
             Source::Subscription { .. } => None,
         };
-        let previous_endpoint = previous.as_ref().map(|profile| &profile.endpoint);
         let (endpoint, runtime) = config::runtime(raw, previous_endpoint, false, base)?;
         let staging = tempfile::Builder::new().prefix("profile-").tempdir_in(&self.dir)?;
-        let generation = staging.path().file_name().unwrap().to_str().unwrap().to_owned();
-        let candidate = Profile { endpoint, generation, source };
+        let generation = directory_name(staging.path())?;
+        let new_core = if existing.is_none() {
+            Some(tempfile::Builder::new().prefix("profile-").tempdir_in(self.dir.join("core"))?)
+        } else {
+            None
+        };
+        let core = match &new_core {
+            Some(dir) => Some(directory_name(dir.path())?),
+            None => existing.and_then(|profile| profile.core.clone()),
+        };
+        let candidate = Profile { endpoint, generation, source, core };
         config::write(&staging.path().join("source.yaml"), raw)?;
         config::write(&self.config_path(&candidate), &runtime)?;
 
@@ -135,32 +315,46 @@ impl Service {
             .context("run Mihomo configuration validation")?;
         ensure!(validated.success(), "Mihomo rejected the configuration. See {}", self.dir.join("validate.log").display());
 
-        let running = self.running_process()?.is_some();
+        let replaced = profiles.profiles.insert(name.clone(), candidate);
+        if profiles.active.is_none() {
+            profiles.active = Some(name.clone());
+        }
+        self.commit(previous.as_ref(), &profiles)?;
+        let _ = staging.keep();
+        if let Some(core) = new_core {
+            let _ = core.keep();
+        }
+        if let Some(replaced) = replaced {
+            remove_profile_dir(&self.dir, &replaced.generation);
+        }
+        Ok(name)
+    }
+
+    fn commit(&self, previous: Option<&Profile>, profiles: &Profiles) -> Result<()> {
+        let next = profiles.active();
+        ensure!(next.is_some() || profiles.profiles.is_empty(), "active profile is missing");
+        let changed = previous.map(|profile| &profile.generation) != next.map(|profile| &profile.generation);
+        let running = changed && self.running_process()?.is_some();
         if running {
             self.stop_locked()?;
         }
         let result = (|| {
-            if running {
-                self.start_locked(&candidate)?;
+            if running && let Some(next) = next {
+                self.start_locked(next)?;
             }
-            config::write_json(&self.profile_path(), &candidate)
+            config::write_json(&self.profile_path(), profiles)
         })();
 
         if let Err(error) = result {
             if running {
                 let rollback = self.stop_locked().and_then(|_| {
-                    self.start_locked(previous.as_ref().context("previous profile is missing")?)
+                    self.start_locked(previous.context("previous profile is missing")?)
                 });
                 if let Err(rollback) = rollback {
                     bail!("apply failed: {error:#}; restarting previous profile failed: {rollback:#}");
                 }
             }
             return Err(error);
-        }
-
-        let _ = staging.keep();
-        if let Some(previous) = previous {
-            let _ = fs::remove_dir_all(self.dir.join(previous.generation));
         }
         Ok(())
     }
@@ -251,6 +445,16 @@ impl Service {
             _ => Ok(()),
         }
     }
+}
+
+fn remove_profile_dir(parent: &Path, name: &str) {
+    if name.starts_with("profile-") && !name.contains('/') {
+        let _ = fs::remove_dir_all(parent.join(name));
+    }
+}
+
+fn directory_name(path: &Path) -> Result<String> {
+    Ok(path.file_name().and_then(|name| name.to_str()).context("profile directory name")?.to_owned())
 }
 
 fn optional_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
