@@ -1,12 +1,15 @@
 mod api;
 mod config;
 mod gateway;
+mod proxy;
 mod service;
+mod settings;
+mod status;
 mod system;
 mod tui;
 
 use anyhow::{Context, Result, bail, ensure};
-use api::{Client, Endpoint};
+use api::Client;
 use clap::{Parser, Subcommand};
 use service::Service;
 use std::{io::{self, Write}, path::PathBuf};
@@ -28,7 +31,7 @@ struct Cli {
 enum Command {
     /// Open the interactive Mihomo dashboard
     Tui {
-        /// Read ClashPT settings from this YAML file (default: ./clashpt.yaml)
+        /// Read ClashPT settings from this YAML file (default: ~/.config/clashpt.yaml)
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -36,10 +39,16 @@ enum Command {
     Start,
     /// Stop Mihomo
     Stop,
+    /// Configure the current shell proxy with the zsh integration, or print shell commands
+    #[command(subcommand)]
+    Proxy(Proxy),
     /// Show service status and the local proxy address
     Status {
         #[arg(long)]
         json: bool,
+        /// Read status indicator settings from this YAML file (default: ~/.config/clashpt.yaml)
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     /// Manage a local configuration or subscription
     #[command(subcommand)]
@@ -50,6 +59,14 @@ enum Command {
     /// Install or update the system service as an administrator
     #[command(subcommand)]
     System(System),
+}
+
+#[derive(Subcommand)]
+enum Proxy {
+    /// Export proxy variables for the configured mixed port
+    On(proxy::Output),
+    /// Unset proxy variables
+    Off(proxy::Output),
 }
 
 #[derive(Subcommand)]
@@ -86,38 +103,32 @@ enum System {
         /// Numeric UID allowed to control the service (default: SUDO_UID)
         #[arg(long)]
         uid: Option<u32>,
+        /// Read system.gateway_workers from this ClashPT settings file
+        #[arg(long)]
+        settings: Option<PathBuf>,
     },
     #[command(hide = true)]
     ServeApi { credentials: PathBuf, socket: PathBuf },
 }
 
-fn status(endpoint: Option<Endpoint>, running: bool, json: bool) -> Result<()> {
-    let proxy = endpoint.as_ref().map(|e| format!("http://127.0.0.1:{}", e.mixed_port));
-    let controller = endpoint.map(|e| format!("http://127.0.0.1:{}", e.controller_port));
-    if json {
-        println!("{}", serde_json::json!({ "running": running, "proxy": proxy, "controller": controller }));
-    } else {
-        println!("{}", if running { "running" } else { "stopped" });
-        if let Some(proxy) = proxy {
-            println!("HTTP/SOCKS proxy: {proxy}");
-        }
-        if let Some(controller) = controller {
-            println!("Control API: {controller}");
-        }
-    }
-    Ok(())
-}
-
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    if let Command::System(System::Apply { config, uid }) = cli.command {
+    if let Command::System(System::Apply { config, uid, settings }) = cli.command {
         let uid = uid.or_else(|| std::env::var("SUDO_UID").ok()?.parse().ok())
             .context("pass --uid with the UID of the user who will control the service")?;
-        return system::apply(&config, &cli.mihomo, uid);
+        let workers = match settings {
+            Some(path) => settings::Settings::load(Some(&path))?.system.gateway_workers,
+            None => None,
+        };
+        return system::apply(&config, &cli.mihomo, uid, workers);
     }
 
     if let Command::System(System::ServeApi { credentials, socket }) = cli.command {
         return gateway::run(&credentials, &socket);
+    }
+
+    if let Command::Proxy(Proxy::Off(ref output)) = cli.command {
+        return proxy::print(None, output);
     }
 
     let service = if cli.system { None } else { Some(Service::new(cli.data_dir, cli.mihomo)?) };
@@ -129,24 +140,40 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
-        Command::Tui { config } => tui::run(Client::new(endpoint()?)?, config.as_deref())?,
-        Command::Start => match &service {
-            Some(service) => service.start()?,
-            None => system::control("start")?,
-        },
-        Command::Stop => match &service {
-            Some(service) => service.stop()?,
-            None => system::control("stop")?,
-        },
-        Command::Status { json } => match &service {
+        Command::Tui { config } => {
+            let (endpoint, workers) = if cli.system {
+                let settings = system::client_settings()?;
+                (settings.endpoint, Some(settings.workers))
+            } else {
+                (endpoint()?, None)
+            };
+            tui::run(Client::new(endpoint)?, config.as_deref(), workers)?;
+        }
+        Command::Start => {
+            match &service {
+                Some(service) => service.start()?,
+                None => system::control("start")?,
+            }
+            status::print_state(true)?;
+        }
+        Command::Stop => {
+            match &service {
+                Some(service) => service.stop()?,
+                None => system::control("stop")?,
+            }
+            status::print_state(false)?;
+        }
+        Command::Proxy(Proxy::On(output)) => proxy::print(Some(endpoint()?.mixed_port), &output)?,
+        Command::Proxy(Proxy::Off(_)) => unreachable!(),
+        Command::Status { json, config } => match &service {
             Some(service) => {
                 let (endpoint, running) = service.status()?;
-                status(endpoint, running, json)?;
+                status::print(endpoint, running, json, config.as_deref())?;
             }
             None => {
                 let endpoint = system::endpoint()?;
                 let running = Client::new(endpoint.clone())?.ready();
-                status(Some(endpoint), running, json)?;
+                status::print(Some(endpoint), running, json, config.as_deref())?;
             }
         },
         Command::Profile(profile) => {

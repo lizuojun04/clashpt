@@ -1,8 +1,9 @@
 mod help;
-mod theme;
+pub(crate) mod theme;
 mod views;
 
 use crate::api::{Client, Connections, LogEntry, Proxies, Providers, Rule, Target};
+use crate::settings::Settings;
 use anyhow::{Result, anyhow};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -11,8 +12,10 @@ use crossterm::{
 };
 use ratatui::{DefaultTerminal, widgets::{ListState, TableState}};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
+    num::NonZeroUsize,
     path::Path,
     sync::{Arc, atomic::{AtomicUsize, Ordering}, mpsc},
     thread,
@@ -92,6 +95,24 @@ impl Catalog {
         self.nodes.range(start..).next().map(|(key, _)| key).filter(|key| key.name == name)
     }
 
+    fn group_targets(&self, group: &crate::api::Group) -> Vec<Target> {
+        let mut visited = BTreeSet::from([group.name.as_str()]);
+        let mut pending = group.all.iter().rev().map(String::as_str).collect::<Vec<_>>();
+        let mut targets = Vec::new();
+
+        while let Some(name) = pending.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            if let Some(subgroup) = self.groups.iter().find(|group| group.name == name) {
+                pending.extend(subgroup.all.iter().rev().map(String::as_str));
+            } else if let Some(target) = self.by_name(name).filter(|target| self.testable(target)) {
+                targets.push(target.clone());
+            }
+        }
+        targets
+    }
+
     fn testable(&self, target: &Target) -> bool {
         self.nodes.get(target).is_some_and(|node| {
             !matches!(node.kind.as_str(), "Compatible" | "Reject" | "RejectDrop" | "Pass")
@@ -110,6 +131,8 @@ struct App {
     node_focus: bool,
     measured: BTreeMap<Target, u64>,
     testing: Option<SpeedTest>,
+    speed_result: Option<SpeedResult>,
+    test_concurrency: usize,
     overview: Overview,
     rules: Vec<Rule>,
     connections: Connections,
@@ -154,7 +177,13 @@ impl Overview {
     }
 }
 
+struct SpeedResult {
+    text: String,
+    expires: Instant,
+}
+
 struct SpeedTest {
+    scope: String,
     receive: mpsc::Receiver<(Target, u64)>,
     completed: usize,
     total: usize,
@@ -199,13 +228,17 @@ fn request(client: &Arc<Client>, page: Page, selection: Option<(String, String)>
     receive
 }
 
-pub fn run(client: Client, config: Option<&Path>) -> Result<()> {
-    let theme = theme::Theme::load(config)?;
+pub fn run(client: Client, config: Option<&Path>, gateway_workers: Option<NonZeroUsize>) -> Result<()> {
+    let settings = Settings::load(config)?;
+    let mut concurrency = settings.latency_test.concurrency.get();
+    if let Some(workers) = gateway_workers {
+        concurrency = concurrency.min(workers.get());
+    }
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
-    let result = run_app(&mut terminal, Arc::new(client), &theme);
+    let result = run_app(&mut terminal, Arc::new(client), &settings, concurrency);
     let _ = terminal.show_cursor();
     result
 }
@@ -218,8 +251,8 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>, theme: &theme::Theme) -> Result<()> {
-    let mut app = App { follow_logs: true, ..App::default() };
+fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>, settings: &Settings, test_concurrency: usize) -> Result<()> {
+    let mut app = App { follow_logs: true, test_concurrency, ..App::default() };
     let mut pending: [Option<mpsc::Receiver<Reply>>; 5] = Default::default();
     let mut due: [Option<Instant>; 5] = Default::default();
     due[app.page.index()] = Some(Instant::now());
@@ -252,10 +285,11 @@ fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>, theme: &theme::T
             due[index] = None;
         }
         if redraw {
-            terminal.draw(|frame| views::draw(&mut app, frame, theme))?;
+            terminal.draw(|frame| views::draw(&mut app, frame, settings))?;
             redraw = false;
         }
-        let busy = pending.iter().any(Option::is_some) || due[index].is_some() || app.testing.is_some();
+        let busy = pending.iter().any(Option::is_some) || due[index].is_some()
+            || app.testing.is_some() || (page == Page::Proxies && app.speed_result.is_some());
         if busy && !event::poll(Duration::from_millis(70))? { continue; }
 
         match event::read()? {
@@ -305,11 +339,23 @@ fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>, theme: &theme::T
                     }
                     KeyCode::Char('t') if page == Page::Proxies => {
                         let targets = app.catalog.nodes.keys().filter(|key| app.catalog.testable(key)).cloned().collect();
-                        app.start_speed(&client, targets);
+                        app.start_speed(&client, "All nodes".into(), targets);
+                    }
+                    KeyCode::Char('g') if page == Page::Proxies => {
+                        if let Some(group) = app.current_group() {
+                            let scope = group.name.clone();
+                            let targets = app.catalog.group_targets(group);
+                            app.start_speed(&client, scope, targets);
+                        } else if app.testing.is_none() {
+                            app.messages[index] = "Choose a strategy group to test its nodes".into();
+                        }
                     }
                     KeyCode::Char('d') if page == Page::Proxies => {
-                        let targets = app.current_target().filter(|key| app.catalog.testable(key)).cloned().into_iter().collect();
-                        app.start_speed(&client, targets);
+                        if let Some(target) = app.current_target().filter(|key| app.catalog.testable(key)).cloned() {
+                            app.start_speed(&client, target.name.clone(), vec![target]);
+                        } else if app.testing.is_none() {
+                            app.messages[index] = "Choose a testable node".into();
+                        }
                     }
                     KeyCode::Enter if page == Page::Proxies && !app.node_focus => app.node_focus = true,
                     KeyCode::Enter if page == Page::Proxies && pending[index].is_none() => {
@@ -442,17 +488,17 @@ impl App {
         }
     }
 
-    fn start_speed(&mut self, client: &Arc<Client>, targets: Vec<Target>) {
+    fn start_speed(&mut self, client: &Arc<Client>, scope: String, targets: Vec<Target>) {
         if self.testing.is_some() { return; }
         if targets.is_empty() {
-            self.messages[1] = "No testable nodes selected".into();
+            self.messages[1] = format!("{scope} has no testable nodes");
             return;
         }
         let total = targets.len();
         let targets = Arc::new(targets);
         let next = Arc::new(AtomicUsize::new(0));
         let (send, receive) = mpsc::channel();
-        for _ in 0..total.min(6) {
+        for _ in 0..total.min(self.test_concurrency) {
             let (targets, next, send, client) = (Arc::clone(&targets), Arc::clone(&next), send.clone(), Arc::clone(client));
             thread::spawn(move || {
                 while let Some(target) = targets.get(next.fetch_add(1, Ordering::Relaxed)) {
@@ -461,11 +507,28 @@ impl App {
                 }
             });
         }
-        self.messages[1] = format!("Testing latency • 0/{total}");
-        self.testing = Some(SpeedTest { receive, completed: 0, total });
+        self.messages[Page::Proxies.index()].clear();
+        self.speed_result = None;
+        self.testing = Some(SpeedTest { scope, receive, completed: 0, total });
+    }
+
+    fn status(&self) -> Cow<'_, str> {
+        if self.page == Page::Proxies {
+            if let Some(test) = &self.testing {
+                return format!("Testing latency · {} • {}/{}", test.scope, test.completed, test.total).into();
+            }
+            if let Some(result) = &self.speed_result {
+                return result.text.as_str().into();
+            }
+        }
+        self.messages[self.page.index()].as_str().into()
     }
 
     fn receive_speed(&mut self) -> bool {
+        if self.speed_result.as_ref().is_some_and(|result| Instant::now() >= result.expires) {
+            self.speed_result = None;
+            return self.page == Page::Proxies;
+        }
         let Some(test) = &mut self.testing else { return false };
         let previous = test.completed;
         loop {
@@ -475,18 +538,17 @@ impl App {
                     test.completed += 1;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.messages[1] = format!("Latency test finished • {}/{}", test.completed, test.total);
+                    self.speed_result = Some(SpeedResult {
+                        text: format!("Latency test finished · {} • {}/{}", test.scope, test.completed, test.total),
+                        expires: Instant::now() + Duration::from_secs(3),
+                    });
                     self.testing = None;
                     return self.page == Page::Proxies;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
             }
         }
-        if test.completed != previous {
-            self.messages[1] = format!("Testing latency • {}/{}", test.completed, test.total);
-            return self.page == Page::Proxies;
-        }
-        false
+        test.completed != previous && self.page == Page::Proxies
     }
 }
 

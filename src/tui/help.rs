@@ -24,6 +24,7 @@ fn page_keys(page: Page) -> &'static [Shortcut] {
             ("PgUp / PgDn", "Move 12 rows"),
             ("Enter", "Open group or select node"),
             ("d", "Test current node"),
+            ("g", "Test nodes in current group"),
             ("t", "Test all nodes"),
         ],
         Page::Rules => &[

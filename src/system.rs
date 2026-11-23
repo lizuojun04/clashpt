@@ -1,9 +1,10 @@
-use crate::{api::{Client, Endpoint}, config};
+use crate::{api::{Client, Endpoint}, config, gateway};
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     fs::{self, File, OpenOptions, Permissions},
     io::{self, Write},
     os::{fd::AsRawFd, unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt}},
+    num::NonZeroUsize,
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -59,9 +60,13 @@ NoNewPrivileges=yes
 UMask=0077
 "#;
 
-pub fn endpoint() -> Result<Endpoint> {
+pub(crate) fn client_settings() -> Result<gateway::Settings> {
     config::read_json(&Path::new(DIRECTORY).join("client.json"))
         .context("read system API credentials")
+}
+
+pub fn endpoint() -> Result<Endpoint> {
+    Ok(client_settings()?.endpoint)
 }
 
 pub fn control(action: &str) -> Result<()> {
@@ -102,9 +107,9 @@ fn executable(path: &Path) -> Result<File> {
     bail!("Mihomo executable not found. Pass --mihomo /absolute/path/to/mihomo");
 }
 
-fn credentials(path: &Path, endpoint: &Endpoint, uid: u32) -> Result<()> {
+fn credentials(path: &Path, settings: &gateway::Settings, uid: u32) -> Result<()> {
     let mut temp = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-    temp.write_all(&serde_json::to_vec(endpoint)?)?;
+    temp.write_all(&serde_json::to_vec(settings)?)?;
     temp.as_file().set_permissions(Permissions::from_mode(0o400))?;
     let result = unsafe { libc::fchown(temp.as_file().as_raw_fd(), uid, 0) };
     if result != 0 {
@@ -124,7 +129,7 @@ fn install_executable(mut input: File, target: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn apply(source: &Path, mihomo: &Path, uid: u32) -> Result<()> {
+pub fn apply(source: &Path, mihomo: &Path, uid: u32, workers: Option<NonZeroUsize>) -> Result<()> {
     ensure!(unsafe { libc::geteuid() } == 0, "run system apply using sudo");
     ensure!(Path::new("/run/systemd/system").is_dir(), "a running systemd system manager is required");
     ensure!(Path::new("/dev/net/tun").exists(), "the system must provide /dev/net/tun");
@@ -139,15 +144,21 @@ pub fn apply(source: &Path, mihomo: &Path, uid: u32) -> Result<()> {
 
     let server = directory.join("server.json");
     let client_path = directory.join("client.json");
-    let previous_endpoint: Option<Endpoint> = if server.exists() {
+    let previous_settings: Option<gateway::Settings> = if server.exists() {
         Some(config::read_json(&server)?)
     } else {
         None
     };
-    let (mut endpoint, runtime) = config::runtime(&raw, previous_endpoint.as_ref(), true, None)?;
+    let previous_endpoint = previous_settings.as_ref().map(|settings| &settings.endpoint);
+    let (mut endpoint, runtime) = config::runtime(&raw, previous_endpoint, true, None)?;
     if fs::metadata(&client_path).is_ok_and(|metadata| metadata.uid() != uid) {
         endpoint.secret = config::secret()?;
     }
+    let workers = workers
+        .or_else(|| previous_settings.as_ref().map(|settings| settings.workers))
+        .unwrap_or(gateway::DEFAULT_WORKERS);
+    let gateway_settings = gateway::Settings { endpoint, workers };
+
     let binary = directory.join("mihomo");
     if !binary.exists() {
         install_executable(executable(mihomo)?, &binary)?;
@@ -168,16 +179,16 @@ pub fn apply(source: &Path, mihomo: &Path, uid: u32) -> Result<()> {
     fs::set_permissions(API_UNIT, Permissions::from_mode(0o644))?;
     root_systemctl(&["daemon-reload"])?;
     let result = (|| {
-        config::write_json(&server, &endpoint)?;
+        config::write_json(&server, &gateway_settings)?;
         config::write(&target, &runtime)?;
         root_systemctl(&["restart", SERVICE])?;
-        let client = Client::new(endpoint.clone())?;
+        let client = Client::new(gateway_settings.endpoint.clone())?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !client.ready() {
             ensure!(Instant::now() < deadline, "Mihomo API did not become ready");
             thread::sleep(Duration::from_millis(100));
         }
-        credentials(&client_path, &endpoint, uid)
+        credentials(&client_path, &gateway_settings, uid)
     })();
 
     if let Err(error) = result {
@@ -188,7 +199,7 @@ pub fn apply(source: &Path, mihomo: &Path, uid: u32) -> Result<()> {
                 None if target.exists() => fs::remove_file(&target)?,
                 None => {}
             }
-            match previous_endpoint {
+            match previous_settings {
                 Some(previous) => config::write_json(&server, &previous)?,
                 None if server.exists() => fs::remove_file(&server)?,
                 None => {}

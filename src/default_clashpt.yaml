@@ -1,0 +1,64 @@
+# Maximum number of simultaneous node latency probes.
+latency_test:
+  concurrency: 12
+
+# Display symbols for the TUI and status command.
+indicators:
+  active_node: "●"
+  running: "●"
+  stopped: "●"
+
+# Display colors. Use terminal names (cyan, dark-gray, reset), quoted RGB
+# values ("#RRGGBB"), or quoted ANSI palette indices ("0"–"255").
+theme:
+  background: reset
+  text: "#a6c4ff"
+  secondary_text: "#96b4fa"
+  accent: cyan
+  active_tab_text: "#ff9e64"
+  active_node_indicator: cyan
+  running_indicator: "#13d84a"
+  stopped_indicator: red
+  status_text: yellow
+
+  border: "#5a6e96"
+  focused_border: "#19e1eb"
+  selection_background: "#2b3a52"
+  unfocused_selection_background: "#1e2736"
+
+  popup_text: "#a6c4ff"
+  popup_key: cyan
+  popup_border: light-blue
+  popup_background: null
+
+  graph_upload: "#13d84a"    # green
+  graph_download: light-blue
+  graph_axis: dark-gray
+
+  latency_unmeasured: dark-gray
+  latency_fast: "#13d84a"        # 1–249 ms
+  latency_medium: yellow     # 250–499 ms
+  latency_slow: "#ffa148"    # 500–999 ms
+  latency_bad: red           # 1000 ms or more
+  latency_failed: red        # Failed test
+
+  log_info: cyan
+  log_warning: yellow
+  log_error: red
+  log_debug: dark-gray
+
+#GRAY            #c8c8c8
+#CYAN            #19e1eb
+#LIGHT_BLUE      #3a9dd6
+#BLUE            #20adc7
+#DEEP_BLUE       #0781e5
+#LI_LI_BLUE      #2ac0d5
+#GREEN           #15c292
+#DARK_GREEN      #149664
+#GRAY_BLUE       #96b4fa
+#LIGHT_GRAY      #141e1e
+#LIGHT_GRAY_BLUE #0f191e
+#DARK_GRAY       #787878
+#DARK_GRAY_BLUE  #5a6e96
+#GOLD            #ff9e64
+

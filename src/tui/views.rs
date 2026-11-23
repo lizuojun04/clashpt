@@ -1,4 +1,5 @@
 use super::{App, Overview, Page, Rate, help, theme::Theme};
+use crate::settings::Settings;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -7,7 +8,8 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Row, Table, Tabs},
 };
 
-pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>, theme: &Theme) {
+pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>, settings: &Settings) {
+    let theme = &settings.theme;
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.surface());
     let [tabs, body, status] = Layout::vertical([
@@ -18,18 +20,18 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>, theme: &Theme) {
     frame.render_widget(Tabs::new(labels)
         .select(page.index())
         .style(theme.secondary())
-        .highlight_style(theme.emphasis())
+        .highlight_style(theme.active_tab())
         .block(panel(theme, " ClashPT ", false).title(Line::from(" ? Keys ").right_aligned())), tabs);
 
     match page {
         Page::Overview => overview(frame, body, &app.overview, theme),
-        Page::Proxies => proxies(frame, body, app, theme),
+        Page::Proxies => proxies(frame, body, app, theme, &settings.indicators.active_node),
         Page::Rules => rules(frame, body, app, theme),
         Page::Conns => connections(frame, body, app, theme),
         Page::Logs => logs(frame, body, app, theme),
     }
 
-    frame.render_widget(Paragraph::new(clean(&app.messages[page.index()])).style(theme.status()), status);
+    frame.render_widget(Paragraph::new(clean(app.status().as_ref())).style(theme.status()), status);
     if let Some(offset) = &mut app.help_offset {
         help::draw(frame, page, offset, theme);
     }
@@ -58,8 +60,8 @@ fn overview(frame: &mut Frame<'_>, area: Rect, view: &Overview, theme: &Theme) {
         metric(theme, "Download", current.map_or_else(|| "—".into(), |v| rate(v.down)), download),
         metric(theme, "Uploaded", bytes(view.snapshot.upload_total), upload),
         metric(theme, "Downloaded", bytes(view.snapshot.download_total), download),
-        metric(theme, "Active", view.snapshot.connections.len().to_string(), theme.text()),
-        metric(theme, "Memory", bytes(view.snapshot.memory), theme.text()),
+        metric(theme, "Active", view.snapshot.connections.len().to_string(), theme.secondary()),
+        metric(theme, "Memory", bytes(view.snapshot.memory), theme.secondary()),
         metric(theme, "Mihomo", version, theme.accent()),
     ];
     if area.width >= 76 {
@@ -115,12 +117,12 @@ fn degrees(value: u64, scale: u64, height: u16) -> u16 {
 
 fn metric(theme: &Theme, label: &str, value: String, style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!(" {label:<12}"), theme.secondary()),
+        Span::styled(format!(" {label:<12}"), theme.text()),
         Span::styled(value, style.add_modifier(Modifier::BOLD)),
     ])
 }
 
-fn proxies(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme) {
+fn proxies(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme, symbol: &str) {
     let [left, right] = if area.width >= 44 {
         Layout::horizontal([Constraint::Percentage(32), Constraint::Fill(1)]).areas(area)
     } else {
@@ -129,6 +131,8 @@ fn proxies(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme) {
     let groups = std::iter::once(ListItem::new(format!("All nodes  ({})", app.catalog.nodes.len())))
         .chain(app.catalog.groups.iter().map(|group| ListItem::new(format!("{}  ({})", clean(&group.name), group.all.len()))))
         .collect::<Vec<_>>();
+    let marker = if symbol.is_empty() { String::new() } else { format!("{symbol} ") };
+    let blank_marker = " ".repeat(Line::raw(marker.as_str()).width());
     let (title, rows) = if let Some(group) = app.current_group() {
         let title = format!(" {} · {} ", clean(&group.name), clean(&group.kind));
         let rows = group.all.iter().map(|name| {
@@ -138,14 +142,15 @@ fn proxies(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme) {
             let delay = measured.or_else(|| node.and_then(|n| n.delay))
                 .or_else(|| app.catalog.groups_delay.get(name).copied());
             let kind = node.map(|n| n.kind.as_str()).unwrap_or("Group");
-            proxy_row(theme, name, kind, delay, group.now == *name)
+            let indicator = if group.now == *name { &marker } else { &blank_marker };
+            proxy_row(theme, name, kind, delay, indicator)
         }).collect::<Vec<_>>();
         (title, rows)
     } else {
         let rows = app.catalog.nodes.iter().map(|(key, node)| {
             let kind = key.provider.as_ref().map_or_else(|| node.kind.clone(), |name| format!("{} · {name}", node.kind));
             let delay = app.measured.get(key).copied().or(node.delay);
-            proxy_row(theme, &key.name, &kind, delay, false)
+            proxy_row(theme, &key.name, &kind, delay, &blank_marker)
         }).collect::<Vec<_>>();
         (" All nodes ".to_string(), rows)
     };
@@ -155,15 +160,15 @@ fn proxies(frame: &mut Frame<'_>, area: Rect, app: &mut App, theme: &Theme) {
         .highlight_style(theme.selection(app.node_focus)), right, &mut app.node);
 }
 
-fn proxy_row(theme: &Theme, name: &str, kind: &str, delay: Option<u64>, selected: bool) -> ListItem<'static> {
+fn proxy_row(theme: &Theme, name: &str, kind: &str, delay: Option<u64>, indicator: &str) -> ListItem<'static> {
     let value = match delay {
         None => "—".to_owned(),
         Some(0) => "failed".to_owned(),
         Some(ms) => format!("{ms} ms"),
     };
     ListItem::new(Line::from(vec![
-        Span::styled(format!(" {value:>8}  "), theme.latency(delay)),
-        Span::styled(if selected { "● " } else { "  " }, theme.accent()),
+        Span::styled(format!(" {indicator}"), theme.active_node_indicator()),
+        Span::styled(format!("{value:>8}  "), theme.latency(delay)),
         Span::raw(clean(name)),
         Span::styled(format!("  {}", clean(kind)), theme.secondary()),
     ]))

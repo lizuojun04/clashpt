@@ -1,21 +1,35 @@
 use crate::{api::{Client, Endpoint, Target}, config};
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{io::Read, path::Path, sync::{Arc, Mutex, mpsc}, thread, time::Duration};
+use std::{io::Read, num::NonZeroUsize, path::Path, sync::{Arc, Mutex, mpsc}, thread, time::Duration};
 use tiny_http::{Header, Method, Request, Response, StatusCode};
 
+pub(crate) const DEFAULT_WORKERS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(crate) struct Settings {
+    #[serde(flatten)]
+    pub(crate) endpoint: Endpoint,
+    #[serde(default = "default_workers")]
+    pub(crate) workers: NonZeroUsize,
+}
+
+fn default_workers() -> NonZeroUsize {
+    DEFAULT_WORKERS
+}
+
 pub fn run(config_path: &Path, socket: &Path) -> Result<()> {
-    let settings: Endpoint = config::read_json(config_path)?;
-    let server = tiny_http::Server::http(("127.0.0.1", settings.controller_port))
+    let settings: Settings = config::read_json(config_path)?;
+    let server = tiny_http::Server::http(("127.0.0.1", settings.endpoint.controller_port))
         .map_err(|error| anyhow::anyhow!("{error}")).context("bind local control API")?;
     let client = Arc::new(Client::unix(socket)?);
-    let expected = format!("Bearer {}", settings.secret);
+    let expected = format!("Bearer {}", settings.endpoint.secret);
     let (send, receive) = mpsc::sync_channel::<Request>(16);
     let receive = Arc::new(Mutex::new(receive));
-    for _ in 0..8 {
+    for _ in 0..settings.workers.get() {
         let (client, receive) = (Arc::clone(&client), Arc::clone(&receive));
-        thread::spawn(move || loop {
+        thread::Builder::new().spawn(move || loop {
             let request = receive.lock().unwrap().recv();
             let Ok(mut request) = request else { break };
             let (path, _) = request.url().split_once('?').unwrap_or((request.url(), ""));
@@ -36,7 +50,7 @@ pub fn run(config_path: &Path, socket: &Path) -> Result<()> {
                 let (status, body) = dispatch(&mut request, &client);
                 respond(request, status, body);
             }
-        });
+        }).context("start control API worker")?;
     }
     for request in server.incoming_requests() {
         let authenticated = request.headers().iter()
