@@ -15,7 +15,8 @@ pub(crate) struct Theme {
     active_profile_indicator: Option<Color>,
     running_indicator: Color,
     stopped_indicator: Color,
-    status_text: Color,
+    footer_info: Color,
+    footer_warning: Color,
     border: Color,
     focused_border: Color,
     selection_background: Color,
@@ -76,8 +77,8 @@ impl Theme {
         if running { self.running_indicator } else { self.stopped_indicator }
     }
 
-    pub(super) fn status(&self) -> Style {
-        Style::new().fg(self.status_text)
+    pub(super) fn footer(&self, warning: bool) -> Style {
+        Style::new().fg(if warning { self.footer_warning } else { self.footer_info })
     }
 
     pub(super) fn selection(&self, focused: bool) -> Style {

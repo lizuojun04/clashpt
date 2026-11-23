@@ -21,7 +21,8 @@ theme:
   active_profile_indicator: null  # Inherit theme.running_indicator
   running_indicator: "#13d84a"
   stopped_indicator: red
-  status_text: yellow
+  footer_info: blue
+  footer_warning: yellow
 
   border: "#5a6e96"
   focused_border: "#19e1eb"

@@ -11,30 +11,30 @@ trap 'exit 143' TERM
 
 download() {
     curl "${curl_options[@]}" --limit-rate "$1" \
-        --write-out '下载 %{size_download} B，耗时 %{time_total} s\n' \
+        --write-out 'Downloaded %{size_download} B in %{time_total} s\n' \
         "$target/__down?bytes=$2"
 }
 
 upload() {
     head -c "$2" /dev/zero | curl "${curl_options[@]}" --limit-rate "$1" \
-        --write-out '上传 %{size_upload} B，耗时 %{time_total} s\n' \
+        --write-out 'Uploaded %{size_upload} B in %{time_total} s\n' \
         --data-binary @- "$target/__up"
 }
 
 phase() {
     local label="$1" rate="$2" download_bytes="$3" upload_bytes="$4"
-    printf '\n%s（限速 %s KiB/s）\n' "$label" "${rate%k}"
+    printf '\n%s (limit: %s KiB/s)\n' "$label" "${rate%k}"
     download "$rate" "$download_bytes"
     upload "$rate" "$upload_bytes"
 }
 
-printf '通过 %s 生成波动流量，按 Ctrl+C 停止。\n' "$proxy"
+printf 'Generating traffic through %s. Press Ctrl+C to stop.\n' "$proxy"
 while true; do
-    phase '低速' 24k 65536 49152
-    phase '高速' 128k 393216 262144
-    printf '\n空闲 4 秒\n'
+    phase 'Low speed' 24k 65536 49152
+    phase 'High speed' 128k 393216 262144
+    printf '\nIdle for 4 seconds\n'
     sleep 4
-    phase '中速' 48k 131072 98304
-    printf '\n空闲 3 秒\n'
+    phase 'Medium speed' 48k 131072 98304
+    printf '\nIdle for 3 seconds\n'
     sleep 3
 done

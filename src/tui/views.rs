@@ -1,4 +1,4 @@
-use super::{App, Overview, Page, Rate, help, theme::Theme};
+use super::{App, NoticeKind, Overview, Page, Rate, help, theme::Theme};
 use crate::{settings::Settings, status};
 use ratatui::{
     Frame,
@@ -32,12 +32,12 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>, settings: &Settings) {
         Page::Profiles => profiles(frame, body, app, settings),
     }
 
-    let (message, success) = app.status();
+    let (message, kind) = app.status();
     let mut notice = Vec::with_capacity(2);
-    if success && !settings.indicators.running.is_empty() {
+    if kind == NoticeKind::Success && !settings.indicators.running.is_empty() {
         notice.push(Span::styled(format!("{} ", settings.indicators.running), Style::new().fg(theme.service_indicator(true))));
     }
-    notice.push(Span::styled(clean(message.as_ref()), theme.status()));
+    notice.push(Span::styled(clean(message.as_ref()), theme.footer(kind == NoticeKind::Warning)));
     frame.render_widget(Paragraph::new(Line::from(notice)), status);
     if let Some(offset) = &mut app.help_offset {
         help::draw(frame, page, offset, theme);

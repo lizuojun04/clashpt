@@ -149,15 +149,29 @@ struct App {
     follow_logs: bool,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum NoticeKind {
+    #[default]
+    Info,
+    Warning,
+    Success,
+}
+
 #[derive(Default)]
 struct Notice {
     text: String,
-    success: bool,
+    kind: NoticeKind,
+}
+
+impl Notice {
+    fn warning(text: impl Into<String>) -> Self {
+        Self { text: text.into(), kind: NoticeKind::Warning }
+    }
 }
 
 impl From<String> for Notice {
     fn from(text: String) -> Self {
-        Self { text, success: false }
+        Self { text, kind: NoticeKind::Info }
     }
 }
 
@@ -353,6 +367,7 @@ impl Drop for TerminalGuard {
 fn run_app(terminal: &mut DefaultTerminal, backend: Arc<Backend>, settings: &Settings, test_concurrency: usize) -> Result<()> {
     let mut app = App {
         follow_logs: true, test_concurrency, system_mode: matches!(backend.as_ref(), Backend::System(_)),
+        node_focus: true,
         ..App::default()
     };
     let mut pending: [Option<mpsc::Receiver<Reply>>; Page::COUNT] = Default::default();
@@ -458,6 +473,7 @@ fn run_app(terminal: &mut DefaultTerminal, backend: Arc<Backend>, settings: &Set
                         if app.page != page {
                             due[app.page.index()] = Some(Instant::now());
                             if app.page == Page::Overview { app.overview.last = None; }
+                            if app.page == Page::Proxies { app.node_focus = true; }
                         }
                     }
                     KeyCode::Tab if page == Page::Proxies => app.node_focus = !app.node_focus,
@@ -486,14 +502,14 @@ fn run_app(terminal: &mut DefaultTerminal, backend: Arc<Backend>, settings: &Set
                             let targets = app.catalog.group_targets(group);
                             app.start_speed(&backend, scope, targets);
                         } else if app.testing.is_none() {
-                            app.messages[index] = "Choose a strategy group to test its nodes".into();
+                            app.messages[index] = Notice::warning("Choose a strategy group to test its nodes");
                         }
                     }
                     KeyCode::Char('d') if page == Page::Proxies && !changing_profiles => {
                         if let Some(target) = app.current_target().filter(|key| app.catalog.testable(key)).cloned() {
                             app.start_speed(&backend, target.name.clone(), vec![target]);
                         } else if app.testing.is_none() {
-                            app.messages[index] = "Choose a testable node".into();
+                            app.messages[index] = Notice::warning("Choose a testable node");
                         }
                     }
                     KeyCode::Enter if page == Page::Proxies && !app.node_focus => app.node_focus = true,
@@ -502,7 +518,7 @@ fn run_app(terminal: &mut DefaultTerminal, backend: Arc<Backend>, settings: &Set
                             pending[index] = Some(request(&backend, page, Action::SelectNode(group, node), false));
                             app.messages[index] = "Switching node…".into();
                         } else if app.group.selected() == Some(0) {
-                            app.messages[index] = "Choose a strategy group to switch nodes".into();
+                            app.messages[index] = Notice::warning("Choose a strategy group to switch nodes");
                         }
                     }
                     KeyCode::Delete | KeyCode::Char('x') if page == Page::Profiles
@@ -538,7 +554,7 @@ impl App {
         self.catalog = Catalog::default();
         self.group = ListState::default();
         self.node = ListState::default();
-        self.node_focus = false;
+        self.node_focus = true;
         self.measured.clear();
         self.testing = None;
         self.speed_result = None;
@@ -592,18 +608,18 @@ impl App {
             Ok(data) => data,
             Err(error) => {
                 if page == Page::Overview { self.overview.last = None; }
-                self.messages[index] = error.to_string().into();
+                self.messages[index] = Notice::warning(error.to_string());
                 return;
             }
         };
-        let (text, success) = if reply.switched {
-            ("Node switched", true)
+        let (text, kind) = if reply.switched {
+            ("Node switched", NoticeKind::Success)
         } else if reply.refreshed {
-            ("Refreshed", true)
+            ("Refreshed", NoticeKind::Success)
         } else {
-            ("", false)
+            ("", NoticeKind::Info)
         };
-        let mut message = Notice { text: text.into(), success };
+        let mut message = Notice { text: text.into(), kind };
         match data {
             Data::Overview(snapshot, version) => self.overview.receive(snapshot, version),
             Data::Proxies(catalog) => {
@@ -648,7 +664,7 @@ impl App {
                 self.profile_cursor.select(cursor(current, profiles.len(), 0));
                 self.profiles = profiles;
                 if let Some(change) = changed {
-                    message = Notice { text: change.message, success: true };
+                    message = Notice { text: change.message, kind: NoticeKind::Success };
                 }
             }
             Data::Logs(logs) => {
@@ -691,13 +707,13 @@ impl App {
     fn start_speed(&mut self, backend: &Backend, scope: String, targets: Vec<Target>) {
         if self.testing.is_some() { return; }
         if targets.is_empty() {
-            self.messages[1] = format!("{scope} has no testable nodes").into();
+            self.messages[1] = Notice::warning(format!("{scope} has no testable nodes"));
             return;
         }
         let client = match backend.client() {
             Ok(client) => client,
             Err(error) => {
-                self.messages[Page::Proxies.index()] = error.to_string().into();
+                self.messages[Page::Proxies.index()] = Notice::warning(error.to_string());
                 return;
             }
         };
@@ -719,17 +735,17 @@ impl App {
         self.testing = Some(SpeedTest { scope, receive, completed: 0, failed: 0, total });
     }
 
-    fn status(&self) -> (Cow<'_, str>, bool) {
+    fn status(&self) -> (Cow<'_, str>, NoticeKind) {
         if self.page == Page::Proxies {
             if let Some(test) = &self.testing {
-                return (format!("Testing latency · {} • {}/{}", test.scope, test.completed, test.total).into(), false);
+                return (format!("Testing latency · {} • {}/{}", test.scope, test.completed, test.total).into(), NoticeKind::Info);
             }
             if let Some(result) = &self.speed_result {
-                return (result.notice.text.as_str().into(), result.notice.success);
+                return (result.notice.text.as_str().into(), result.notice.kind);
             }
         }
         let notice = &self.messages[self.page.index()];
-        (notice.text.as_str().into(), notice.success)
+        (notice.text.as_str().into(), notice.kind)
     }
 
     fn receive_speed(&mut self) -> bool {
@@ -752,7 +768,14 @@ impl App {
                         text.push_str(&format!(" ({} failed)", test.failed));
                     }
                     self.speed_result = Some(SpeedResult {
-                        notice: Notice { text, success: test.failed == 0 && test.completed == test.total },
+                        notice: Notice {
+                            text,
+                            kind: if test.failed == 0 && test.completed == test.total {
+                                NoticeKind::Success
+                            } else {
+                                NoticeKind::Warning
+                            },
+                        },
                         expires: Instant::now() + Duration::from_secs(3),
                     });
                     self.testing = None;
