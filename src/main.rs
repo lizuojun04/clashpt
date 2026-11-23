@@ -27,7 +27,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Open the interactive Mihomo dashboard
-    Tui,
+    Tui {
+        /// Read ClashPT settings from this YAML file (default: ./clashpt.yaml)
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Start Mihomo
     Start,
     /// Stop Mihomo
@@ -125,7 +129,7 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
-        Command::Tui => tui::run(Client::new(endpoint()?)?)?,
+        Command::Tui { config } => tui::run(Client::new(endpoint()?)?, config.as_deref())?,
         Command::Start => match &service {
             Some(service) => service.start()?,
             None => system::control("start")?,

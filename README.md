@@ -2,6 +2,14 @@
 
 ClashPT 是面向 Linux 的 Mihomo 管理工具。TUI 和 CLI 可以查看策略组、切换节点和查询运行状态。普通用户模式提供本地 HTTP/SOCKS 代理，系统模式通过 systemd 启用 TUN。
 
+##
+
+```bash
+cargo build --release --locked
+mkdir -p ~/.local/bin
+install -m 755 target/release/clashpt ~/.local/bin/clashpt
+```
+
 ## 安装
 
 准备 Rust 工具链和 Mihomo，并确保 `mihomo` 在 `PATH` 中。也可以用 `--mihomo /path/to/mihomo` 指定内核。
@@ -25,11 +33,12 @@ clashpt tui
 
 将 `status` 输出的本地代理地址填入需要使用代理的应用。使用 `clashpt stop` 停止 Mihomo。
 
-TUI 默认打开 Overview，显示上下行实时波形、流量和连接数。Proxies 用于切换节点和测延迟，Rules、Conns、Logs 分别显示规则、活动连接和日志。
+TUI 默认打开 Proxies，可切换节点和测延迟。按 `1` 打开 Overview，查看上下行实时波形、流量和连接数。Rules、Conns、Logs 分别显示规则、活动连接和日志。
 
 | TUI 按键 | 操作 |
 | --- | --- |
 | `1`–`5` | 切换 Overview、Proxies、Rules、Conns、Logs |
+| `?` | 打开当前页面的快捷键弹窗，按 `Enter`、`Esc` 或 `?` 关闭 |
 | `Tab`、左右方向键 | 在 Proxies 的策略组和节点列表之间切换焦点 |
 | 上下方向键 | 移动光标 |
 | `Enter` | 在 Proxies 中进入当前策略组或选中当前节点 |
@@ -45,6 +54,16 @@ clashpt nodes list
 clashpt nodes select '组名' '节点名'
 clashpt nodes list --json
 clashpt status --json
+```
+
+## TUI 颜色配置
+
+从项目根目录运行 `clashpt tui` 会读取 [clashpt.yaml](clashpt.yaml) 中的 `theme`。修改后重新打开 TUI 即可生效。颜色支持 `cyan` 等终端颜色名、带引号的十六进制颜色（例如 `"#2b3a52"`）和带引号的 ANSI 色号（例如 `"42"`）。省略的颜色使用内置默认值。
+
+在其他目录运行时，可以指定文件路径：
+
+```bash
+clashpt tui --config /path/to/clashpt/clashpt.yaml
 ```
 
 ## 订阅
@@ -98,3 +117,5 @@ clashpt --system tui
 (umask 077; clashpt profile export > ./subscription.yaml)
 sudo "$(command -v clashpt)" --mihomo "$(command -v mihomo)" system apply ./subscription.yaml
 ```
+
+

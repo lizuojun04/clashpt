@@ -1,3 +1,5 @@
+mod help;
+mod theme;
 mod views;
 
 use crate::api::{Client, Connections, LogEntry, Proxies, Providers, Rule, Target};
@@ -11,6 +13,7 @@ use ratatui::{DefaultTerminal, widgets::{ListState, TableState}};
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
+    path::Path,
     sync::{Arc, atomic::{AtomicUsize, Ordering}, mpsc},
     thread,
     time::{Duration, Instant},
@@ -18,8 +21,8 @@ use std::{
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Page {
-    #[default]
     Overview,
+    #[default]
     Proxies,
     Rules,
     Conns,
@@ -99,6 +102,7 @@ impl Catalog {
 #[derive(Default)]
 struct App {
     page: Page,
+    help_offset: Option<usize>,
     messages: [String; 5],
     catalog: Catalog,
     group: ListState,
@@ -195,12 +199,13 @@ fn request(client: &Arc<Client>, page: Page, selection: Option<(String, String)>
     receive
 }
 
-pub fn run(client: Client) -> Result<()> {
+pub fn run(client: Client, config: Option<&Path>) -> Result<()> {
+    let theme = theme::Theme::load(config)?;
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
-    let result = run_app(&mut terminal, Arc::new(client));
+    let result = run_app(&mut terminal, Arc::new(client), &theme);
     let _ = terminal.show_cursor();
     result
 }
@@ -213,11 +218,11 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>) -> Result<()> {
+fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>, theme: &theme::Theme) -> Result<()> {
     let mut app = App { follow_logs: true, ..App::default() };
     let mut pending: [Option<mpsc::Receiver<Reply>>; 5] = Default::default();
     let mut due: [Option<Instant>; 5] = Default::default();
-    due[Page::Overview.index()] = Some(Instant::now());
+    due[app.page.index()] = Some(Instant::now());
     let mut redraw = true;
     loop {
         for page in Page::ALL {
@@ -247,7 +252,7 @@ fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>) -> Result<()> {
             due[index] = None;
         }
         if redraw {
-            terminal.draw(|frame| views::draw(&mut app, frame))?;
+            terminal.draw(|frame| views::draw(&mut app, frame, theme))?;
             redraw = false;
         }
         let busy = pending.iter().any(Option::is_some) || due[index].is_some() || app.testing.is_some();
@@ -256,9 +261,26 @@ fn run_app(terminal: &mut DefaultTerminal, client: Arc<Client>) -> Result<()> {
         match event::read()? {
             Event::Resize(_, _) => redraw = true,
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return Ok(());
+                }
+                if let Some(offset) = &mut app.help_offset {
+                    match key.code {
+                        KeyCode::Char('?') | KeyCode::Esc | KeyCode::Enter if key.kind == KeyEventKind::Press => {
+                            app.help_offset = None;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => *offset = offset.saturating_sub(1),
+                        KeyCode::Down | KeyCode::Char('j') => *offset = offset.saturating_add(1),
+                        KeyCode::PageUp => *offset = offset.saturating_sub(5),
+                        KeyCode::PageDown => *offset = offset.saturating_add(5),
+                        _ => continue,
+                    }
+                    redraw = true;
+                    continue;
+                }
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
+                    KeyCode::Char('?') if key.kind == KeyEventKind::Press => app.help_offset = Some(0),
                     KeyCode::Char(n @ '1'..='5') => {
                         app.page = Page::ALL[(n as u8 - b'1') as usize];
                         if app.page != page {
