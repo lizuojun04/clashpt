@@ -6,8 +6,7 @@ die() {
 }
 
 trusted_path() {
-    # Every component must be owned by this user or root. Sticky shared parents
-    # (such as /tmp) protect an owned child against replacement by another UID.
+    # Ordinary user installs may use shared writable directories.
     checked=$1
     first=yes
     while :; do
@@ -15,7 +14,7 @@ trusted_path() {
         owner=$(stat -c %u -- "$checked") || die "cannot inspect $checked"
         [ "$owner" = 0 ] || [ "$owner" = "$(id -u)" ] || die "untrusted owner: $checked"
         mode=$(stat -c %a -- "$checked")
-        if [ $((0$mode & 022)) -ne 0 ]; then
+        if { [ ! -d "$checked" ] || [ "$(id -u)" = 0 ]; } && [ $((0$mode & 022)) -ne 0 ]; then
             [ "$first" = no ] && [ -d "$checked" ] && [ $((0$mode & 01000)) -ne 0 ] ||
                 die "writable installation path: $checked"
         fi

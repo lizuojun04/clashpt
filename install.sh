@@ -6,8 +6,7 @@ die() {
 }
 
 trusted_path() {
-    # Every component must be owned by this user or root. Sticky shared parents
-    # (such as /tmp) protect an owned child against replacement by another UID.
+    # Ordinary user installs may use shared writable directories.
     checked=$1
     first=yes
     while :; do
@@ -15,7 +14,7 @@ trusted_path() {
         owner=$(stat -c %u -- "$checked") || die "cannot inspect $checked"
         [ "$owner" = 0 ] || [ "$owner" = "$(id -u)" ] || die "untrusted owner: $checked"
         mode=$(stat -c %a -- "$checked")
-        if [ $((0$mode & 022)) -ne 0 ]; then
+        if { [ ! -d "$checked" ] || [ "$(id -u)" = 0 ]; } && [ $((0$mode & 022)) -ne 0 ]; then
             [ "$first" = no ] && [ -d "$checked" ] && [ $((0$mode & 01000)) -ne 0 ] ||
                 die "writable installation path: $checked"
         fi
@@ -42,20 +41,22 @@ EOF
 
 download() {
     command -v curl >/dev/null 2>&1 || die 'curl is required for downloads'
+    printf 'Downloading %s to %s\n' "${1##*/}" "$2" >&2
     case "$1" in
         https://github.com/*|https://raw.githubusercontent.com/*)
             if [ -n "$gh_proxy" ]; then
                 # Reject redirects so the client never follows a GitHub URL directly.
-                curl -q --noproxy '*' -fsSL --max-redirs 0 --retry 3 --output "$2" -- "$gh_proxy/$1" ||
+                curl -q --noproxy '*' -fL --progress-bar --connect-timeout 60 --max-redirs 0 --retry 3 --output "$2" -- "$gh_proxy/$1" ||
                     die "could not download $1 through $gh_proxy"
                 return
             fi ;;
     esac
-    curl -fsSL --retry 3 --output "$2" -- "$1" || die "could not download $1"
+    curl -fL --progress-bar --connect-timeout 60 --retry 3 --output "$2" -- "$1" || die "could not download $1"
 }
 
 check_sha256() {
     command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required to verify downloads'
+    printf 'Verifying SHA-256 for %s\n' "${2##*/}" >&2
     checksum=$(sha256sum < "$2") || die "could not read $2"
     [ "${checksum%% *}" = "$1" ] || die "SHA-256 mismatch for ${2##*/}"
 }
@@ -167,7 +168,9 @@ EOF
     prefix=$(realpath -e -- "$prefix")
     trusted_path "$prefix"
     exec 9<"$prefix"
+    printf 'Acquiring installation lock on %s\n' "$prefix" >&2
     flock -x 9
+    printf 'Installing to %s\n' "$prefix" >&2
     bindir=$prefix/bin
     share=$prefix/share/clashpt
     shelldir=$share/shell
