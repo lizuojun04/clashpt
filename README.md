@@ -16,13 +16,13 @@ curl -fsSL https://github.com/lizuojun04/clashpt/releases/latest/download/instal
 
 ```sh
 GH_PROXY=https://gh-proxy.org
-RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.0
+RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.1
 
 curl --noproxy '*' -fsSL "$GH_PROXY/$RELEASE/install-gh-proxy.sh" |
-  sh -s -- --gh-proxy "$GH_PROXY"
+  sh -s -- --version v0.1.1 --gh-proxy "$GH_PROXY"
 ```
 
-安装器默认下载最新的 ClashPT 发布包及其指定的 Mihomo 版本，并将两个二进制安装到 `~/.local/bin/`。重新运行同一条命令即可更新。安装器会保留兼容的 `clashpt.yaml`，遇到不兼容的配置时会先备份为 `clashpt.yaml.bak`，再写入默认配置。
+安装器默认下载最新的 ClashPT 发布包及其指定的 Mihomo 版本，并将两个二进制安装到 `~/.local/bin/`。安装器会登记受管文件。在同一安装前缀重新运行即可更新已登记且未被替换的文件。安装器会保留兼容的 `clashpt.yaml`，遇到不兼容的配置时会先备份为 `clashpt.yaml.bak`，再写入默认配置。
 
 把 `~/.local/bin` 加到 `PATH`。如果希望 `clashpt start/stop` 和 `clashpt proxy on/off` 更新当前终端的代理变量，在 Shell 配置文件中加入对应的加载命令，再重新打开终端。
 
@@ -42,11 +42,11 @@ source "$HOME/.local/share/clashpt/shell/clashpt.zsh"
 
 ### 下载含 Mihomo 的完整包
 
-[GitHub Release](https://github.com/lizuojun04/clashpt/releases/tag/v0.1.0) 提供 Linux `x86_64` 和 `aarch64` 完整包。包内包含 `clashpt`、配套的 `mihomo`、`clashpt.bash` 和 `clashpt.zsh`。可以用 `curl` 或 `wget` 直接经网关下载，再解压手动使用。
+[GitHub Release](https://github.com/lizuojun04/clashpt/releases/tag/v0.1.1) 提供 Linux `x86_64` 和 `aarch64` 完整包。包内包含 `clashpt`、配套的 `mihomo`、`clashpt.bash` 和 `clashpt.zsh`。可以用 `curl` 或 `wget` 直接经网关下载，再解压手动使用。
 
 ```sh
 GH_PROXY=https://gh-proxy.org
-RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.0
+RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.1
 ASSET="clashpt-linux-$(uname -m)-with-mihomo.tar.gz"
 URL="$GH_PROXY/$RELEASE/$ASSET"
 
@@ -156,7 +156,7 @@ clashpt profile export B
 clashpt profile delete B
 ```
 
-第一份保存的配置会成为当前配置。之后保存其他名称会保留当前选择。省略 `--name` 时，重复导入同一文件路径或同一订阅 URL 会更新对应的配置，其他来源自动获得独立名称。要明确替换某份配置，可以指定它的名称。旧的单份配置会显示为 `default`。
+第一份保存的配置会成为当前配置。之后保存其他名称会保留当前选择。省略 `--name` 时，重复导入同一文件路径或同一订阅 URL 会更新对应的配置，其他来源自动获得独立名称。要明确替换某份配置，可以指定它的名称。
 
 在 TUI 中按 `6` 打开 Profiles，用方向键选中配置，再按 `Enter` 激活。Mihomo 运行时会重启以应用选中的配置，现有连接可能中断。如果两个配置的代理端口不同，已启用代理的 zsh 终端需要重新执行 `clashpt proxy on` 来更新环境变量。
 

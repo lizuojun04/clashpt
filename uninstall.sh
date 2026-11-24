@@ -70,7 +70,6 @@ main() {
 
     case "${XDG_CONFIG_HOME:-}" in /*) settings_dir=$XDG_CONFIG_HOME/clashpt ;; *) settings_dir=$HOME/.config/clashpt ;; esac
     settings_dir=$(realpath -ms -- "$settings_dir")
-    legacy_dir=$(realpath -ms -- "$HOME/.local/state/clashpt")
     prefix=$(realpath -ms -- "$prefix")
     [ "$prefix" != / ] || die 'the installation prefix cannot be /'
     if [ -n "$data_dir" ]; then
@@ -80,9 +79,21 @@ main() {
     bindir=$prefix/bin
     share=$prefix/share/clashpt
 
+    [ -d "$prefix" ] && [ "$(realpath -e -- "$prefix")" = "$prefix" ] || die 'unknown installation prefix'
+    trusted_path "$prefix"
+    exec 9<"$prefix"
+    flock -x 9
+    receipt=$share/install.receipt
+    for dir in "$bindir" "$prefix/share" "$share" "$share/shell"; do
+        [ ! -L "$dir" ] || die "refusing symbolic link: $dir"
+    done
+    [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ "$(sed -n '1p' "$receipt")" = "$prefix" ] ||
+        die "invalid or mismatched installation receipt: $receipt"
+    trusted_path "$receipt"
+    trusted_path "$bindir"
+
     printf 'ClashPT files to remove:\n  %s\n  %s\n  %s\n' "$bindir/clashpt" "$share" "$settings_dir"
-    [ ! -e "$legacy_dir" ] || printf '  %s\n' "$legacy_dir"
-    [ -z "$data_dir" ] || [ "$data_dir" = "$settings_dir" ] || [ "$data_dir" = "$legacy_dir" ] ||
+    [ -z "$data_dir" ] || [ "$data_dir" = "$settings_dir" ] ||
         printf '  ClashPT data in %s\n' "$data_dir"
     [ "$system" = no ] || printf '  ClashPT systemd units and system data\n'
     printf 'Mihomo binary to remove when selected:\n  %s\n' "$bindir/mihomo"
@@ -99,24 +110,12 @@ main() {
         esac
     fi
 
-    [ -d "$prefix" ] && [ "$(realpath -e -- "$prefix")" = "$prefix" ] || die 'unknown installation prefix'
-    trusted_path "$prefix"
-    exec 9<"$prefix"
-    flock -x 9
-    receipt=$share/install.receipt
-    for dir in "$bindir" "$prefix/share" "$share" "$share/shell"; do
-        [ ! -L "$dir" ] || die "refusing symbolic link: $dir"
-    done
-    [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ "$(sed -n '1p' "$receipt")" = "$prefix" ] ||
-        die 'no matching installation receipt'
-    trusted_path "$receipt"
-    trusted_path "$bindir"
     owned() {
         [ -f "$1" ] && [ ! -L "$1" ] || return 1
         sum=$(sha256sum < "$1") || return 1
         grep -Fxq -- "${sum%% *}  $2" "$receipt"
     }
-    for directory in "$settings_dir" "$legacy_dir" "$data_dir"; do
+    for directory in "$settings_dir" "$data_dir"; do
         [ -n "$directory" ] && [ -d "$directory" ] || continue
         [ "$(realpath -e -- "$directory")" = "$directory" ] || die 'refusing aliased runtime directory'
         [ -f "$directory/.clashpt-runtime" ] || continue
