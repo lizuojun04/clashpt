@@ -20,9 +20,8 @@ pub(crate) fn print(endpoint: Option<crate::api::Endpoint>, options: &Output) ->
     let enabled = endpoint.is_some();
     let lines = if let Some(endpoint) = endpoint {
         let port = endpoint.mixed_port;
-        anyhow::ensure!(endpoint.proxy_password.len() == 64 && endpoint.proxy_password.bytes().all(|b| b.is_ascii_hexdigit()), "invalid proxy credentials");
-        let http = format!("http://clashpt:{}@127.0.0.1:{port}", endpoint.proxy_password);
-        let socks = format!("socks5h://clashpt:{}@127.0.0.1:{port}", endpoint.proxy_password);
+        let http = format!("http://127.0.0.1:{port}");
+        let socks = format!("socks5h://127.0.0.1:{port}");
         if options.applied {
             vec![
                 "Proxy environment enabled".into(),

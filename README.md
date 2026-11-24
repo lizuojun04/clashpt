@@ -89,7 +89,7 @@ clashpt status
 clashpt tui
 ```
 
-用 `clashpt proxy on --shell` 获取应用所需的带认证代理地址。使用 `clashpt stop` 停止 Mihomo。
+用 `clashpt proxy on --shell` 获取应用所需的本地代理地址。使用 `clashpt stop` 停止 Mihomo。
 
 TUI 默认打开 Proxies，可切换节点和测延迟。按 `1` 打开 Overview，查看上下行实时波形、流量和连接数。Rules、Conns、Logs 分别显示规则、活动连接和日志。Profiles 用于选择保存的配置。
 
@@ -116,7 +116,7 @@ clashpt status --json
 
 ## zsh 代理环境变量
 
-代理端口默认要求认证。加载 Shell 集成后使用 `clashpt proxy on`。需要手动配置应用时，`clashpt proxy on --shell` 输出含凭据的代理 URL，请只在自己的终端查看。
+从此分支构建的版本默认监听 `127.0.0.1:7890`，同机用户可免密使用 HTTP/SOCKS 代理。配置中的非零 `mixed-port` 可以覆盖默认端口。加载 Shell 集成后使用 `clashpt proxy on`，或用 `clashpt proxy on --shell` 查看代理 URL。
 
 要在成功启停内核时自动设置或清理变量，可以在 `~/.zshrc` 中再加载集成脚本。将路径换成仓库的实际位置。
 
@@ -172,7 +172,7 @@ clashpt profile delete B
 | --- | --- |
 | `profile.json` | 保存全部配置的元数据和当前选择，每份配置的 `generation` 指向自己的配置目录 |
 | `profile-<随机后缀>/source.yaml` | 本次导入的原始 YAML 副本，传给 `import` 的文件保留在原位置 |
-| `profile-<随机后缀>/config.yaml` | Mihomo 实际使用的运行配置，包含 ClashPT 设置的本地代理端口、代理认证和控制 socket |
+| `profile-<随机后缀>/config.yaml` | Mihomo 实际使用的运行配置，包含 ClashPT 设置的本地代理端口和控制 socket |
 | `core/` | Mihomo 工作目录。新保存的配置各有自己的缓存子目录 |
 | `validate.log`、`mihomo.log` | 配置校验日志和内核运行日志 |
 

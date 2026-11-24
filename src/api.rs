@@ -7,8 +7,6 @@ use std::{collections::BTreeMap, io::{BufRead, BufReader, Read}, path::Path, tim
 pub struct Endpoint {
     #[serde(default)]
     pub socket: std::path::PathBuf,
-    #[serde(default)]
-    pub proxy_password: String,
     pub mixed_port: u16,
     pub secret: String,
 }

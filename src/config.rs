@@ -5,7 +5,6 @@ use serde_yaml::{Mapping, Value};
 use std::{
     fs::{self, File},
     io::{Read, Write},
-    net::TcpListener,
     os::unix::fs::DirBuilderExt,
     path::Path,
     time::Duration,
@@ -64,10 +63,6 @@ pub fn secret() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn allocate_port() -> Result<u16> {
-    Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
-}
-
 fn endpoints(map: &Mapping, previous: Option<&Endpoint>, socket: &Path) -> Result<Endpoint> {
     let mixed = match map.get("mixed-port") {
         None | Some(Value::Null) => None,
@@ -77,14 +72,9 @@ fn endpoints(map: &Mapping, previous: Option<&Endpoint>, socket: &Path) -> Resul
             (port != 0).then_some(port)
         }
     };
-    let mixed_port = mixed.or_else(|| previous.map(|e| e.mixed_port))
-        .map_or_else(allocate_port, Ok)?;
+    let mixed_port = mixed.unwrap_or(7890);
     let secret = previous.map(|e| e.secret.clone()).map_or_else(secret, Ok)?;
-    let proxy_password = match previous {
-        Some(e) if !e.proxy_password.is_empty() => e.proxy_password.clone(),
-        _ => self::secret()?,
-    };
-    Ok(Endpoint { mixed_port, socket: socket.into(), secret, proxy_password })
+    Ok(Endpoint { mixed_port, socket: socket.into(), secret })
 }
 
 fn set(map: &mut Mapping, key: &str, value: impl Into<Value>) {
@@ -121,14 +111,7 @@ pub fn runtime(raw: &[u8], previous: Option<&Endpoint>, tun_enabled: bool, sourc
     };
     set(map, "external-controller-unix", control_socket);
     map.remove("skip-auth-prefixes");
-    let mut accounts = match map.remove("authentication") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Sequence(accounts)) => accounts,
-        _ => bail!("authentication must be a sequence"),
-    };
-    accounts.retain(|account| !account.as_str().is_some_and(|s| s.starts_with("clashpt:")));
-    accounts.push(Value::String(format!("clashpt:{}", endpoint.proxy_password)));
-    set(map, "authentication", Value::Sequence(accounts));
+    map.remove("authentication");
 
     if let Some(dns) = map.get_mut("dns").and_then(Value::as_mapping_mut) {
         dns.remove("listen");
