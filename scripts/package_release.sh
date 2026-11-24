@@ -51,13 +51,44 @@ package() {
     tar -czf "$work/clashpt-linux-$1.tar.gz" -C "$work/package" clashpt clashpt.zsh clashpt.bash mihomo-release.tsv
 }
 
+package_with_mihomo() {
+    entry=$(awk -v arch="$1" '
+        $1 == arch && NF == 4 {print $2, $3, $4; count++}
+        END {if (count != 1) exit 1}
+    ' "$work/package/mihomo-release.tsv") || die "no unique Mihomo release for $1"
+    IFS=' ' read -r version asset checksum <<EOF
+$entry
+EOF
+    upstream=https://github.com/MetaCubeX/mihomo
+    curl -fsSL --retry 3 -o "$work/$asset" -- "$upstream/releases/download/$version/$asset"
+    printf '%s  %s\n' "$checksum" "$work/$asset" | sha256sum -c -
+    gzip -dc -- "$work/$asset" > "$work/package/mihomo"
+    chmod 755 "$work/package/mihomo"
+    validate_binary "$work/package/mihomo" "$2"
+
+    source_archive=mihomo-source-$version.tar.gz
+    if [ ! -f "$work/package/$source_archive" ]; then
+        curl -fsSL --retry 3 -o "$work/package/$source_archive" -- "$upstream/archive/refs/tags/$version.tar.gz"
+        tar -xOzf "$work/package/$source_archive" "mihomo-${version#v}/LICENSE" > "$work/package/MIHOMO-LICENSE"
+        test -s "$work/package/MIHOMO-LICENSE"
+    fi
+
+    tar -czf "$work/clashpt-linux-$1-with-mihomo.tar.gz" -C "$work/package" \
+        clashpt mihomo clashpt.zsh clashpt.bash MIHOMO-LICENSE "$source_archive"
+}
+
+command -v curl >/dev/null 2>&1 || die 'curl is required to download Mihomo and its source'
 package x86_64 "$amd64_binary"
+package_with_mihomo x86_64 'Advanced Micro Devices X86-64'
 package aarch64 "$arm64_binary"
+package_with_mihomo aarch64 'AArch64'
 install -m 755 -- "$project_dir/install.sh" "$work/install.sh"
 (
     cd -- "$work"
     sha256sum clashpt-linux-x86_64.tar.gz clashpt-linux-aarch64.tar.gz > SHA256SUMS
+    sha256sum clashpt-linux-x86_64-with-mihomo.tar.gz clashpt-linux-aarch64-with-mihomo.tar.gz > SHA256SUMS-with-mihomo
 )
 mv -- "$work/clashpt-linux-x86_64.tar.gz" "$work/clashpt-linux-aarch64.tar.gz" \
-    "$work/install.sh" "$work/SHA256SUMS" "$output/"
+    "$work/clashpt-linux-x86_64-with-mihomo.tar.gz" "$work/clashpt-linux-aarch64-with-mihomo.tar.gz" \
+    "$work/install.sh" "$work/SHA256SUMS" "$work/SHA256SUMS-with-mihomo" "$output/"
 printf 'Release files prepared in %s\n' "$output"

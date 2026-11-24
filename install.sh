@@ -7,19 +7,30 @@ die() {
 
 usage() {
     cat <<'EOF'
-Usage: sh install.sh [--prefix DIR] [--version TAG | --from-build FILE]
+Usage: sh install.sh [--prefix DIR] [--version TAG | --from-build FILE] [--gh-proxy URL]
 
 Install or update ClashPT, Mihomo, and Bash/Zsh integration on Linux.
   --prefix DIR       Install binaries in DIR/bin (default: ~/.local/bin).
   --version TAG      Download a specific ClashPT release (default: latest).
   --from-build FILE  Install a locally compiled binary from a source checkout.
+  --gh-proxy URL     Fetch GitHub downloads through this HTTPS gateway.
 
 CLASHPT_RELEASE_URL overrides the release download directory.
+GH_PROXY supplies the gateway unless overridden by --gh-proxy.
 EOF
 }
 
 download() {
     command -v curl >/dev/null 2>&1 || die 'curl is required for downloads'
+    case "$1" in
+        https://github.com/*|https://raw.githubusercontent.com/*)
+            if [ -n "$gh_proxy" ]; then
+                # Reject redirects so the client never follows a GitHub URL directly.
+                curl -q --noproxy '*' -fsSL --max-redirs 0 --retry 3 --output "$2" -- "$gh_proxy/$1" ||
+                    die "could not download $1 through $gh_proxy"
+                return
+            fi ;;
+    esac
     curl -fsSL --retry 3 --output "$2" -- "$1" || die "could not download $1"
 }
 
@@ -39,6 +50,7 @@ main() {
     prefix=${HOME:?HOME is required}/.local
     version=latest
     from_build=
+    gh_proxy=${GH_PROXY:-}
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --prefix|--version|--from-build)
@@ -49,6 +61,11 @@ main() {
                     --from-build) from_build=$2 ;;
                 esac
                 shift 2 ;;
+            --gh-proxy)
+                [ "$#" -ge 2 ] || die '--gh-proxy requires a value'
+                gh_proxy=$2
+                shift 2 ;;
+            --gh-proxy=*) gh_proxy=${1#*=}; shift ;;
             -h|--help) usage; return ;;
             *) die "unknown option $1" ;;
         esac
@@ -56,6 +73,8 @@ main() {
     [ -z "$from_build" ] || [ "$version" = latest ] || die 'choose --version or --from-build'
     case "$prefix" in /*) ;; *) prefix=$PWD/$prefix ;; esac
     case "$version" in *[!a-zA-Z0-9._-]*|.|..) die 'invalid release tag' ;; esac
+    gh_proxy=${gh_proxy%/}
+    case "$gh_proxy" in ''|https://?*) ;; *) die '--gh-proxy requires an HTTPS URL' ;; esac
 
     [ "$(uname -s)" = Linux ] || die 'only Linux is supported'
     case "$(uname -m)" in

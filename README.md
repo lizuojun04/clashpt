@@ -2,23 +2,81 @@
 
 ClashPT 是面向 Linux 的 Mihomo 管理工具。TUI 和 CLI 可以查看策略组、切换节点和查询运行状态。普通用户模式提供本地 HTTP/SOCKS 代理，系统模式通过 systemd 启用 TUN。
 
-##
-
-```bash
-cargo build --release --locked
-mkdir -p ~/.local/bin
-install -m 755 target/release/clashpt ~/.local/bin/clashpt
-```
-
 ## 安装
 
-准备 Rust 工具链和一个可执行的 Mihomo 内核。普通用户模式默认从 `PATH` 查找 `mihomo`，也可以用 `--mihomo /path/to/mihomo` 或 `CLASHPT_MIHOMO` 指定路径。系统模式首次执行 `system apply` 时，会将指定的 Mihomo 复制到 `/etc/clashpt/mihomo`。
+### 一键安装或更新
+
+能够直连 GitHub 时，可以用下面的命令安装或更新 ClashPT：
+
+```sh
+curl -fsSL https://github.com/lizuojun04/clashpt/releases/latest/download/install.sh | sh
+```
+
+如果当前网络无法直连 GitHub，可以使用网关版安装器。`--gh-proxy` 将同一个网关用于 ClashPT 发布包、校验文件和配套的 Mihomo。`--noproxy '*'` 让 `curl` 直接连接网关，无需设置本地代理。
+
+```sh
+GH_PROXY=https://gh-proxy.org
+RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.0
+
+curl --noproxy '*' -fsSL "$GH_PROXY/$RELEASE/install-gh-proxy.sh" |
+  sh -s -- --gh-proxy "$GH_PROXY"
+```
+
+安装器默认下载最新的 ClashPT 发布包及其指定的 Mihomo 版本，并将两个二进制安装到 `~/.local/bin/`。重新运行同一条命令即可更新。安装器会保留兼容的 `clashpt.yaml`，遇到不兼容的配置时会先备份为 `clashpt.yaml.bak`，再写入默认配置。
+
+把 `~/.local/bin` 加到 `PATH`。如果希望 `clashpt start/stop` 和 `clashpt proxy on/off` 更新当前终端的代理变量，在 Shell 配置文件中加入对应的加载命令，再重新打开终端。
+
+在 `~/.bashrc` 中加入：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+source "$HOME/.local/share/clashpt/shell/clashpt.bash"
+```
+
+在 `~/.zshrc` 中加入：
+
+```zsh
+export PATH="$HOME/.local/bin:$PATH"
+source "$HOME/.local/share/clashpt/shell/clashpt.zsh"
+```
+
+### 下载含 Mihomo 的完整包
+
+[GitHub Release](https://github.com/lizuojun04/clashpt/releases/tag/v0.1.0) 提供 Linux `x86_64` 和 `aarch64` 完整包。包内包含 `clashpt`、配套的 `mihomo`、`clashpt.bash` 和 `clashpt.zsh`。可以用 `curl` 或 `wget` 直接经网关下载，再解压手动使用。
+
+```sh
+GH_PROXY=https://gh-proxy.org
+RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.0
+ASSET="clashpt-linux-$(uname -m)-with-mihomo.tar.gz"
+URL="$GH_PROXY/$RELEASE/$ASSET"
+
+# curl 和 wget 任选一个。
+curl --noproxy '*' -fsSLO "$URL"
+# wget --no-proxy -O "$ASSET" "$URL"
+
+curl --noproxy '*' -fsSLO "$GH_PROXY/$RELEASE/SHA256SUMS-with-mihomo"
+awk -v asset="$ASSET" '$2 == asset' SHA256SUMS-with-mihomo | sha256sum -c - &&
+  tar -xzf "$ASSET"
+```
+
+解压后可直接运行 `./clashpt --mihomo "$PWD/mihomo" status`，使用包内配套的 Mihomo。
+
+### 从源码安装
+
+准备好 Rust 工具链，然后在项目根目录执行：
+
+```sh
+cargo build --release --locked
+sh install.sh --from-build target/release/clashpt
+```
+
+如果已有 Mihomo，且只需要编译并安装 ClashPT 二进制，也可以运行：
 
 ```bash
 cargo install --path . --locked
 ```
 
-安装后可直接运行 `clashpt`。也可以在仓库里用 `bash scripts/run.sh <命令>` 运行，例如 `bash scripts/run.sh status`。
+普通用户模式默认从 `PATH` 查找 `mihomo`，也可以用 `--mihomo /path/to/mihomo` 或 `CLASHPT_MIHOMO` 指定路径。系统模式首次执行 `system apply` 时，会将指定的 Mihomo 复制到 `/etc/clashpt/mihomo`。开发时也可在仓库里运行 `bash scripts/run.sh status`。
 
 ## 普通用户模式
 
