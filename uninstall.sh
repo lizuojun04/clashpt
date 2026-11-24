@@ -117,7 +117,12 @@ main() {
     for directory in "$settings_dir" "$data_dir"; do
         [ -n "$directory" ] && [ -d "$directory" ] || continue
         [ "$(realpath -e -- "$directory")" = "$directory" ] || die 'refusing aliased runtime directory'
-        [ -f "$directory/.clashpt-runtime" ] || continue
+        if [ ! -f "$directory/.clashpt-runtime" ]; then
+            if [ "$directory" = "$settings_dir" ] && [ -e "$directory/process.json" ]; then
+                die "stop the unregistered instance in $directory before uninstalling"
+            fi
+            continue
+        fi
         owned "$bindir/clashpt" bin/clashpt || die 'cannot clean state with an unverified manager'
         trusted_path "$bindir/clashpt"
         trusted_path "$directory"
@@ -128,9 +133,8 @@ main() {
         if [ "$rel" = bin/mihomo ] && [ "$remove_mihomo" = no ]; then continue; fi
         if owned "$prefix/$rel" "$rel"; then rm -- "$prefix/$rel"; fi
     done
-    if owned "$settings_dir/clashpt.yaml" "$settings_dir/clashpt.yaml"; then rm -- "$settings_dir/clashpt.yaml"; fi
-    rm -- "$receipt"
-    rmdir -- "$share/shell" "$share" 2>/dev/null || :
+    rm -rf -- "$settings_dir" "$share"
+    rmdir --ignore-fail-on-non-empty -- "$prefix/share"
     printf 'Uninstall complete.\n'
 }
 
