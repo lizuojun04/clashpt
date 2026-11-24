@@ -5,6 +5,26 @@ die() {
     exit 1
 }
 
+trusted_path() {
+    # Every component must be owned by this user or root. Sticky shared parents
+    # (such as /tmp) protect an owned child against replacement by another UID.
+    checked=$1
+    first=yes
+    while :; do
+        [ ! -L "$checked" ] || die "symbolic link in installation path: $checked"
+        owner=$(stat -c %u -- "$checked") || die "cannot inspect $checked"
+        [ "$owner" = 0 ] || [ "$owner" = "$(id -u)" ] || die "untrusted owner: $checked"
+        mode=$(stat -c %a -- "$checked")
+        if [ $((0$mode & 022)) -ne 0 ]; then
+            [ "$first" = no ] && [ -d "$checked" ] && [ $((0$mode & 01000)) -ne 0 ] ||
+                die "writable installation path: $checked"
+        fi
+        [ "$checked" != / ] || break
+        checked=$(dirname -- "$checked")
+        first=no
+    done
+}
+
 usage() {
     cat <<'EOF'
 Usage: sh uninstall.sh [-y|--yes] [--prefix DIR] [--data-dir DIR] [--system]
@@ -19,68 +39,13 @@ Without -y, choose to remove ClashPT only, remove both, or cancel.
 EOF
 }
 
-stop_user_service() {
-    [ -f "$1/process.json" ] || return 0
-    [ -n "$clashpt_binary" ] || die "cannot stop the Mihomo process recorded in $1 without ClashPT"
-    if ! "$clashpt_binary" --data-dir "$1" stop >/dev/null && [ -f "$1/process.json" ]; then
-        die "could not stop the Mihomo process recorded in $1"
-    fi
-}
-
-clean_custom_data() {
-    directory=$1
-    if [ ! -f "$directory/profile.json" ] && [ ! -f "$directory/process.json" ] &&
-        [ ! -f "$directory/operation.lock" ]; then
-        if [ -d "$directory/core" ]; then
-            rmdir -- "$directory/core" 2>/dev/null || :
-        fi
-    else
-        for profile in "$directory"/profile-*; do
-            [ -f "$profile/config.yaml" ] || [ -f "$profile/source.yaml" ] || continue
-            rm -rf -- "$profile"
-        done
-        rm -rf -- "$directory/core"
-        rm -f -- "$directory/mihomo.log" "$directory/validate.log" \
-            "$directory/profile.json" "$directory/process.json" "$directory/operation.lock"
-    fi
-    if [ -d "$directory" ] && [ ! -L "$directory" ]; then
-        rmdir --ignore-fail-on-non-empty -- "$directory"
-    fi
-}
-
 clean_system() {
-    # Keep the installed Mihomo copy when the user selects ClashPT only.
-    if [ "$(id -u)" -eq 0 ]; then
-        set -- /bin/sh
-    elif [ "$assume_yes" = yes ]; then
-        set -- sudo -n -- /bin/sh
-    else
-        set -- sudo -- /bin/sh
-    fi
-    "$@" -eu -c '
-        unit_dir=/etc/systemd/system
-        if [ -d /run/systemd/system ]; then
-            if [ -f "$unit_dir/clashpt.service" ] || [ -L "$unit_dir/multi-user.target.wants/clashpt.service" ]; then
-                /usr/bin/systemctl disable --now clashpt.service
-            fi
-            if [ -f "$unit_dir/clashpt-api.service" ]; then
-                /usr/bin/systemctl stop clashpt-api.service
-            fi
-        fi
-        rm -f -- "$unit_dir/clashpt.service" "$unit_dir/clashpt-api.service" \
-            "$unit_dir/multi-user.target.wants/clashpt.service"
-        rm -rf -- /var/lib/clashpt /var/lib/private/clashpt /run/clashpt-core
-        if [ "$1" = yes ]; then
-            rm -rf -- /etc/clashpt
-        elif [ -d /etc/clashpt ]; then
-            rm -f -- /etc/clashpt/clashpt /etc/clashpt/config.yaml /etc/clashpt/client.json \
-                /etc/clashpt/server.json /etc/clashpt/apply.lock
-            rmdir --ignore-fail-on-non-empty -- /etc/clashpt
-        fi
-        if [ -d /run/systemd/system ]; then
-            /usr/bin/systemctl daemon-reload
-        fi
-    ' clashpt-system-uninstall "$remove_mihomo" || die 'system uninstall failed (administrator access required)'
+    set -- /usr/local/bin/clashpt system remove
+    if [ "$remove_mihomo" = no ]; then set -- "$@" --keep-mihomo; fi
+    if [ "$(id -u)" -eq 0 ]; then "$@"
+    elif [ "$assume_yes" = yes ]; then sudo -n -- "$@"
+    else sudo -- "$@"; fi
+
 }
 
 main() {
@@ -134,25 +99,40 @@ main() {
         esac
     fi
 
-    if [ -x "$bindir/clashpt" ]; then
-        clashpt_binary=$bindir/clashpt
-    else
-        clashpt_binary=$(command -v clashpt) || clashpt_binary=
-    fi
-    stop_user_service "$settings_dir"
-    stop_user_service "$legacy_dir"
-    if [ "$system" = yes ]; then
-        clean_system
-    fi
-    if [ -n "$data_dir" ] && [ "$data_dir" != "$settings_dir" ] && [ "$data_dir" != "$legacy_dir" ]; then
-        stop_user_service "$data_dir"
-        clean_custom_data "$data_dir"
-    fi
-    rm -f -- "$bindir/clashpt"
-    if [ "$remove_mihomo" = yes ]; then
-        rm -f -- "$bindir/mihomo"
-    fi
-    rm -rf -- "$share" "$settings_dir" "$legacy_dir"
+    [ -d "$prefix" ] && [ "$(realpath -e -- "$prefix")" = "$prefix" ] || die 'unknown installation prefix'
+    trusted_path "$prefix"
+    exec 9<"$prefix"
+    flock -x 9
+    receipt=$share/install.receipt
+    for dir in "$bindir" "$prefix/share" "$share" "$share/shell"; do
+        [ ! -L "$dir" ] || die "refusing symbolic link: $dir"
+    done
+    [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ "$(sed -n '1p' "$receipt")" = "$prefix" ] ||
+        die 'no matching installation receipt'
+    trusted_path "$receipt"
+    trusted_path "$bindir"
+    owned() {
+        [ -f "$1" ] && [ ! -L "$1" ] || return 1
+        sum=$(sha256sum < "$1") || return 1
+        grep -Fxq -- "${sum%% *}  $2" "$receipt"
+    }
+    for directory in "$settings_dir" "$legacy_dir" "$data_dir"; do
+        [ -n "$directory" ] && [ -d "$directory" ] || continue
+        [ "$(realpath -e -- "$directory")" = "$directory" ] || die 'refusing aliased runtime directory'
+        [ -f "$directory/.clashpt-runtime" ] || continue
+        owned "$bindir/clashpt" bin/clashpt || die 'cannot clean state with an unverified manager'
+        trusted_path "$bindir/clashpt"
+        trusted_path "$directory"
+        "$bindir/clashpt" --data-dir "$directory" uninstall-runtime
+    done
+    if [ "$system" = yes ]; then clean_system; fi
+    for rel in bin/clashpt bin/mihomo share/clashpt/shell/clashpt.bash share/clashpt/shell/clashpt.zsh; do
+        if [ "$rel" = bin/mihomo ] && [ "$remove_mihomo" = no ]; then continue; fi
+        if owned "$prefix/$rel" "$rel"; then rm -- "$prefix/$rel"; fi
+    done
+    if owned "$settings_dir/clashpt.yaml" "$settings_dir/clashpt.yaml"; then rm -- "$settings_dir/clashpt.yaml"; fi
+    rm -- "$receipt"
+    rmdir -- "$share/shell" "$share" 2>/dev/null || :
     printf 'Uninstall complete.\n'
 }
 

@@ -21,8 +21,10 @@ fn default_workers() -> NonZeroUsize {
 
 pub fn run(config_path: &Path, socket: &Path) -> Result<()> {
     let settings: Settings = config::read_json(config_path)?;
-    let server = tiny_http::Server::http(("127.0.0.1", settings.endpoint.controller_port))
+    let server = tiny_http::Server::http_unix(&settings.endpoint.socket)
         .map_err(|error| anyhow::anyhow!("{error}")).context("bind local control API")?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&settings.endpoint.socket, std::fs::Permissions::from_mode(0o666))?;
     let client = Arc::new(Client::unix(socket)?);
     let expected = format!("Bearer {}", settings.endpoint.secret);
     let (send, receive) = mpsc::sync_channel::<Request>(16);

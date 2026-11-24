@@ -5,6 +5,26 @@ die() {
     exit 1
 }
 
+trusted_path() {
+    # Every component must be owned by this user or root. Sticky shared parents
+    # (such as /tmp) protect an owned child against replacement by another UID.
+    checked=$1
+    first=yes
+    while :; do
+        [ ! -L "$checked" ] || die "symbolic link in installation path: $checked"
+        owner=$(stat -c %u -- "$checked") || die "cannot inspect $checked"
+        [ "$owner" = 0 ] || [ "$owner" = "$(id -u)" ] || die "untrusted owner: $checked"
+        mode=$(stat -c %a -- "$checked")
+        if [ $((0$mode & 022)) -ne 0 ]; then
+            [ "$first" = no ] && [ -d "$checked" ] && [ $((0$mode & 01000)) -ne 0 ] ||
+                die "writable installation path: $checked"
+        fi
+        [ "$checked" != / ] || break
+        checked=$(dirname -- "$checked")
+        first=no
+    done
+}
+
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [--prefix DIR] [--version TAG | --from-build FILE] [--gh-proxy URL]
@@ -47,6 +67,7 @@ quote_shell() {
 
 main() {
     set -eu
+    umask 022
     prefix=${HOME:?HOME is required}/.local
     version=latest
     from_build=
@@ -142,17 +163,67 @@ EOF
     chmod 755 "$mihomo"
     "$mihomo" -v >/dev/null || die 'the downloaded Mihomo could not run on this machine'
 
+    mkdir -p -- "$prefix"
+    prefix=$(realpath -e -- "$prefix")
+    trusted_path "$prefix"
+    exec 9<"$prefix"
+    flock -x 9
+    bindir=$prefix/bin
+    share=$prefix/share/clashpt
+    shelldir=$share/shell
+    for dir in "$bindir" "$prefix/share" "$share" "$shelldir"; do
+        [ ! -L "$dir" ] || die "refusing symbolic link: $dir"
+    done
     mkdir -p -- "$bindir" "$shelldir"
+    for dir in "$bindir" "$shelldir"; do trusted_path "$dir"; done
+    receipt=$share/install.receipt
+    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+        trusted_path "$receipt"
+        [ ! -L "$receipt" ] && [ "$(sed -n '1p' "$receipt")" = "$prefix" ] ||
+            die 'invalid installation receipt'
+    fi
+    for rel in bin/clashpt bin/mihomo share/clashpt/shell/clashpt.bash share/clashpt/shell/clashpt.zsh; do
+        dest=$prefix/$rel
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            [ -f "$dest" ] && [ ! -L "$dest" ] && [ -f "$receipt" ] ||
+                die "existing file has no installation receipt: $dest"
+            sum=$(sha256sum < "$dest")
+            grep -Fxq -- "${sum%% *}  $rel" "$receipt" || die "existing file was replaced: $dest"
+        fi
+    done
     bin_stage=$(mktemp -d "$bindir/.clashpt-install.XXXXXX")
     shell_stage=$(mktemp -d "$shelldir/.clashpt-install.XXXXXX")
     install -m 755 -- "$binary" "$bin_stage/clashpt"
     install -m 755 -- "$mihomo" "$bin_stage/mihomo"
     install -m 644 -- "$zsh_script" "$bash_script" "$shell_stage/"
+    case "${XDG_CONFIG_HOME:-}" in /*) settings=$XDG_CONFIG_HOME/clashpt/clashpt.yaml ;; *) settings=$HOME/.config/clashpt/clashpt.yaml ;; esac
+    own_settings=no
+    if [ ! -e "$settings" ] && [ ! -L "$settings" ]; then own_settings=yes
+    elif [ -f "$receipt" ] && [ -f "$settings" ]; then
+        sum=$(sha256sum < "$settings")
+        if grep -Fxq -- "${sum%% *}  $settings" "$receipt"; then own_settings=yes; fi
+    fi
     "$bin_stage/clashpt" install-settings || die 'could not install ClashPT settings'
+    {
+        printf '%s\n' "$prefix"
+        for name in clashpt mihomo; do
+            sum=$(sha256sum < "$bin_stage/$name")
+            printf '%s  bin/%s\n' "${sum%% *}" "$name"
+        done
+        for name in clashpt.zsh clashpt.bash; do
+            sum=$(sha256sum < "$shell_stage/$name")
+            printf '%s  share/clashpt/shell/%s\n' "${sum%% *}" "$name"
+        done
+        if [ "$own_settings" = yes ]; then sha256sum -- "$settings"; fi
+    } > "$shell_stage/receipt"
+    cp -- "$shell_stage/receipt" "$shell_stage/pending"
+    if [ -f "$receipt" ]; then tail -n +2 "$receipt" >> "$shell_stage/pending"; fi
+    mv -fT -- "$shell_stage/pending" "$receipt"
     mv -fT -- "$bin_stage/mihomo" "$bindir/mihomo"
     mv -fT -- "$bin_stage/clashpt" "$bindir/clashpt"
     mv -fT -- "$shell_stage/clashpt.zsh" "$shelldir/clashpt.zsh"
     mv -fT -- "$shell_stage/clashpt.bash" "$shelldir/clashpt.bash"
+    mv -fT -- "$shell_stage/receipt" "$receipt"
     printf 'Installed Mihomo %s at %s\n' "$mihomo_version" "$bindir/mihomo"
     printf 'Installed %s at %s\n' "$release" "$bindir/clashpt"
 

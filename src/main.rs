@@ -61,6 +61,8 @@ enum Command {
     System(System),
     #[command(hide = true)]
     InstallSettings,
+    #[command(hide = true)]
+    UninstallRuntime,
 }
 
 #[derive(Subcommand)]
@@ -117,6 +119,8 @@ enum Nodes {
 
 #[derive(Subcommand)]
 enum System {
+    /// Remove files owned by the system deployment
+    Remove { #[arg(long)] keep_mihomo: bool },
     /// Install/update the service, start TUN and grant API access to a user
     Apply {
         config: PathBuf,
@@ -135,6 +139,8 @@ fn run(cli: Cli) -> Result<()> {
     if matches!(cli.command, Command::InstallSettings) {
         return settings::Settings::install_defaults();
     }
+
+    if let Command::System(System::Remove { keep_mihomo }) = cli.command { return system::remove(keep_mihomo); }
 
     if let Command::System(System::Apply { config, uid, settings }) = cli.command {
         let uid = uid.or_else(|| std::env::var("SUDO_UID").ok()?.parse().ok())
@@ -186,7 +192,7 @@ fn run(cli: Cli) -> Result<()> {
             }
             status::print_state(false)?;
         }
-        Command::Proxy(Proxy::On(output)) => proxy::print(Some(endpoint()?.mixed_port), &output)?,
+        Command::Proxy(Proxy::On(output)) => proxy::print(Some(endpoint()?), &output)?,
         Command::Proxy(Proxy::Off(_)) => unreachable!(),
         Command::Status { json, config } => match &service {
             Some(service) => {
@@ -264,6 +270,7 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Command::UninstallRuntime => service.context("expected user mode")?.uninstall_runtime()?,
         Command::System(_) | Command::InstallSettings => unreachable!(),
     }
     Ok(())

@@ -116,10 +116,61 @@ impl Service {
     }
 
     fn lock(&self) -> Result<File> {
-        let file = OpenOptions::new().create(true).truncate(false).read(true).write(true).mode(0o600)
-            .open(self.dir.join("operation.lock"))?;
+        // The lock inode also coordinates already-running clients during upgrades.
+        let file = OpenOptions::new().create(true).truncate(false).read(true).write(true)
+            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(self.dir.join("operation.lock"))?;
         FileExt::lock_exclusive(&file)?;
         Ok(file)
+    }
+
+    fn runtime_identity(&self) -> Result<(PathBuf, PathBuf, u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(&self.dir)?;
+        Ok((self.dir.clone(), std::env::current_exe()?, meta.dev(), meta.ino()))
+    }
+
+    fn record_directory(&self) -> Result<()> {
+        let marker = self.dir.join(".clashpt-runtime");
+        if !marker.exists() && ["profile.json", "process.json", "validate.log", "mihomo.log"]
+            .iter().all(|name| !self.dir.join(name).exists()) {
+            config::write_json(&marker, &self.runtime_identity()?)?;
+        }
+        Ok(())
+    }
+
+    pub fn uninstall_runtime(&self) -> Result<()> {
+        let _lock = self.lock()?;
+        let marker = self.dir.join(".clashpt-runtime");
+        if optional_json(&marker)?.as_ref() != Some(&self.runtime_identity()?) {
+            ensure!(!self.process_path().exists(), "unregistered running instance; stop it before uninstalling");
+            return Ok(());
+        }
+        let profiles = self.profiles()?;
+        self.stop_locked()?;
+        for profile in profiles.profiles.values() {
+            for (parent, name, files) in [
+                (self.dir.clone(), Some(&profile.generation), &["source.yaml", "config.yaml"][..]),
+                (self.dir.join("core"), profile.core.as_ref(), &["cache.db"][..]),
+            ] {
+                let Some(name) = name else { continue };
+                let directory = parent.join(name);
+                if !name.starts_with("profile-") || name.contains('/') ||
+                    !fs::symlink_metadata(&parent).is_ok_and(|m| m.is_dir()) ||
+                    !fs::symlink_metadata(&directory).is_ok_and(|m| m.is_dir()) { continue; }
+                for file in files {
+                    let path = directory.join(file);
+                    if fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) { fs::remove_file(path)?; }
+                }
+                let _ = fs::remove_dir(directory);
+            }
+        }
+        for name in ["profile.json", "validate.log", "mihomo.log", ".clashpt-runtime"] {
+            match fs::remove_file(self.dir.join(name)) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn profile_path(&self) -> PathBuf {
@@ -284,7 +335,35 @@ impl Service {
             .context("could not choose a profile name")
     }
 
+    fn control_socket(&self) -> Result<PathBuf> {
+        use std::{hash::{Hash, Hasher, DefaultHasher}, os::unix::fs::{MetadataExt, DirBuilderExt}};
+        let uid = unsafe { libc::geteuid() };
+        let local = PathBuf::from(format!("/run/user/{uid}"));
+        let directory = if crate::api::private_socket_directory(&local).is_ok() {
+            local.join("clashpt")
+        } else {
+            if let Some(base) = ["/tmp", "/dev/shm"].into_iter().find(|base| {
+                fs::symlink_metadata(base).is_ok_and(|m| m.is_dir() && m.uid() == 0 && m.mode() & 0o1000 != 0)
+            }) {
+                Path::new(base).join(format!("clashpt-control-{uid}"))
+            } else {
+                let home = std::env::var_os("HOME").context("set HOME for private control sockets")?;
+                PathBuf::from(home).canonicalize()?.join(".clashpt-control")
+            }
+        };
+        match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e.into()),
+            _ => {}
+        }
+        crate::api::private_socket_directory(&directory)?;
+        let mut hash = DefaultHasher::new();
+        self.dir.hash(&mut hash);
+        fs::read("/etc/machine-id")?.hash(&mut hash);
+        Ok(directory.join(format!("{:016x}.sock", hash.finish())))
+    }
+
     fn save(&self, mut profiles: Profiles, name: Option<&str>, raw: &[u8], source: Source) -> Result<String> {
+        self.record_directory()?;
         let name = self.save_name(&profiles, name, &source, raw)?;
         let existing = profiles.profiles.get(&name);
         let previous = profiles.active().cloned();
@@ -293,7 +372,7 @@ impl Service {
             Source::File { base, .. } => Some(base.as_path()),
             Source::Subscription { .. } => None,
         };
-        let (endpoint, runtime) = config::runtime(raw, previous_endpoint, false, base)?;
+        let (endpoint, runtime) = config::runtime(raw, previous_endpoint, false, base, &self.control_socket()?)?;
         let staging = tempfile::Builder::new().prefix("profile-").tempdir_in(&self.dir)?;
         let generation = directory_name(staging.path())?;
         let new_core = if existing.is_none() {
@@ -385,9 +464,9 @@ impl Service {
     }
 
     fn start_locked(&self, profile: &Profile) -> Result<()> {
-        for port in [profile.endpoint.controller_port, profile.endpoint.mixed_port] {
-            TcpListener::bind(("127.0.0.1", port)).with_context(|| format!("local port {port} is occupied"))?;
-        }
+        ensure!(profile.endpoint.socket == self.control_socket()?, "re-import this profile to enable secure control");
+        let port = profile.endpoint.mixed_port;
+        TcpListener::bind(("127.0.0.1", port)).with_context(|| format!("local port {port} is occupied"))?;
         let log_path = self.dir.join("mihomo.log");
         let log = append_log(&log_path)?;
         let mut command = self.command(profile);

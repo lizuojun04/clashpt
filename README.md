@@ -89,7 +89,7 @@ clashpt status
 clashpt tui
 ```
 
-将 `status` 输出的本地代理地址填入需要使用代理的应用。使用 `clashpt stop` 停止 Mihomo。
+用 `clashpt proxy on --shell` 获取应用所需的带认证代理地址。使用 `clashpt stop` 停止 Mihomo。
 
 TUI 默认打开 Proxies，可切换节点和测延迟。按 `1` 打开 Overview，查看上下行实时波形、流量和连接数。Rules、Conns、Logs 分别显示规则、活动连接和日志。Profiles 用于选择保存的配置。
 
@@ -116,19 +116,7 @@ clashpt status --json
 
 ## zsh 代理环境变量
 
-在 `~/.zshrc` 中添加下面的别名。将示例中的 `7891` 换成 `clashpt status` 显示的混合代理端口。
-
-```zsh
-alias proxy_on='
-export HTTP_PROXY=http://127.0.0.1:7891
-export HTTPS_PROXY=http://127.0.0.1:7891
-export ALL_PROXY=socks5h://127.0.0.1:7891
-export http_proxy=http://127.0.0.1:7891
-export https_proxy=http://127.0.0.1:7891
-export all_proxy=socks5h://127.0.0.1:7891
-'
-alias proxy_off='unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy'
-```
+代理端口默认要求认证。加载 Shell 集成后使用 `clashpt proxy on`。需要手动配置应用时，`clashpt proxy on --shell` 输出含凭据的代理 URL，请只在自己的终端查看。
 
 要在成功启停内核时自动设置或清理变量，可以在 `~/.zshrc` 中再加载集成脚本。将路径换成仓库的实际位置。
 
@@ -184,7 +172,7 @@ clashpt profile delete B
 | --- | --- |
 | `profile.json` | 保存全部配置的元数据和当前选择，每份配置的 `generation` 指向自己的配置目录 |
 | `profile-<随机后缀>/source.yaml` | 本次导入的原始 YAML 副本，传给 `import` 的文件保留在原位置 |
-| `profile-<随机后缀>/config.yaml` | Mihomo 实际使用的运行配置，包含 ClashPT 设置的本地代理和控制端口 |
+| `profile-<随机后缀>/config.yaml` | Mihomo 实际使用的运行配置，包含 ClashPT 设置的本地代理端口、代理认证和控制 socket |
 | `core/` | Mihomo 工作目录。新保存的配置各有自己的缓存子目录 |
 | `validate.log`、`mihomo.log` | 配置校验日志和内核运行日志 |
 
@@ -200,10 +188,10 @@ clashpt start
 
 ## 系统模式（sudo + TUN）
 
-需要运行中的 systemd 和 `/dev/net/tun`。首次应用时指定 Mihomo 的实际路径。
+需要运行中的 systemd 和 `/dev/net/tun`。由管理员先从可信来源将 clashpt 和 mihomo 安装到 root 拥有且普通用户不可写的 /usr/local/bin。首次部署和升级均使用这两个绝对路径。
 
 ```bash
-sudo "$(command -v clashpt)" --mihomo "$(command -v mihomo)" system apply ./config.yaml
+sudo /usr/local/bin/clashpt --mihomo /usr/local/bin/mihomo system apply ./config.yaml
 clashpt --system status
 clashpt --system tui
 ```
@@ -211,17 +199,19 @@ clashpt --system tui
 可以在 `~/.config/clashpt/clashpt.yaml` 中设置 `system.gateway_workers`（默认 `8`），再由管理员应用。把同一文件中的 `latency_test.concurrency` 调到所需的测速并行数，重新打开 TUI。
 
 ```bash
-sudo "$(command -v clashpt)" --mihomo "$(command -v mihomo)" \
+sudo /usr/local/bin/clashpt --mihomo /usr/local/bin/mihomo \
   system apply ./config.yaml --settings "$HOME/.config/clashpt/clashpt.yaml"
 ```
 
 `system apply` 将运行配置保存到 `/etc/clashpt/config.yaml`，并启动系统服务。默认授权调用 sudo 的用户通过 CLI 或 TUI 管理节点。系统服务的启停使用 `clashpt --system start` 和 `clashpt --system stop`，服务日志可用 `sudo journalctl -u clashpt.service` 查看。
 
+管理员可以执行 `sudo /usr/local/bin/clashpt system remove` 卸载已登记的系统部署。
+
 系统模式通过管理员应用配置。要使用普通模式中保存的一份配置，先按名称导出 YAML，再以管理员身份应用。
 
 ```bash
 (umask 077; clashpt profile export A > ./subscription.yaml)
-sudo "$(command -v clashpt)" --mihomo "$(command -v mihomo)" system apply ./subscription.yaml
+sudo /usr/local/bin/clashpt --mihomo /usr/local/bin/mihomo system apply ./subscription.yaml
 ```
 
 

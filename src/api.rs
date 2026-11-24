@@ -5,7 +5,10 @@ use std::{collections::BTreeMap, io::{BufRead, BufReader, Read}, path::Path, tim
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Endpoint {
-    pub controller_port: u16,
+    #[serde(default)]
+    pub socket: std::path::PathBuf,
+    #[serde(default)]
+    pub proxy_password: String,
     pub mixed_port: u16,
     pub secret: String,
 }
@@ -143,12 +146,45 @@ pub struct Client {
     secret: Option<String>,
 }
 
+pub(crate) fn private_socket_directory(path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = unsafe { libc::geteuid() };
+    anyhow::ensure!(path.is_absolute(), "expected an absolute socket directory");
+    for (index, parent) in path.ancestors().enumerate() {
+        let meta = std::fs::symlink_metadata(parent)?;
+        let trusted = if index == 0 {
+            meta.uid() == uid && meta.mode() & 0o077 == 0
+        } else {
+            (meta.uid() == uid || meta.uid() == 0) &&
+                (meta.mode() & 0o022 == 0 || meta.mode() & 0o1000 != 0)
+        };
+        anyhow::ensure!(meta.is_dir() && trusted, "untrusted control socket directory: {}", parent.display());
+    }
+    Ok(())
+}
+
 impl Client {
     pub fn new(endpoint: Endpoint) -> Result<Self> {
+        anyhow::ensure!(endpoint.socket.is_absolute(), "re-import this profile or reapply the system deployment to enable secure control");
+        use std::os::unix::fs::MetadataExt;
+        let parent = endpoint.socket.parent().context("missing socket directory")?;
+        let system = endpoint.socket == Path::new(crate::system::GATEWAY_SOCKET);
+        if system {
+            let run = std::fs::symlink_metadata("/run")?;
+            anyhow::ensure!(run.is_dir() && run.uid() == 0 && run.mode() & 0o022 == 0,
+                "insecure system runtime directory");
+            match std::fs::symlink_metadata(parent) {
+                Ok(meta) => anyhow::ensure!(meta.is_dir() && meta.mode() & 0o022 == 0, "insecure gateway directory"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            private_socket_directory(parent)?;
+        }
         Ok(Self {
-            agent: Self::builder().build()?,
-            base: format!("http://127.0.0.1:{}", endpoint.controller_port),
-            secret: Some(endpoint.secret),
+            agent: Self::builder().unix_socket(endpoint.socket).build()?,
+            base: "http://localhost".into(),
+            secret: system.then_some(endpoint.secret),
         })
     }
 

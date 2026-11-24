@@ -7,7 +7,7 @@ use std::{io::{self, IsTerminal, Write}, path::Path};
 pub(crate) fn print(endpoint: Option<Endpoint>, running: bool, json: bool, config: Option<&Path>) -> Result<()> {
     let mixed_address = endpoint.as_ref().map(|e| format!("127.0.0.1:{}", e.mixed_port));
     let proxy = mixed_address.as_ref().map(|address| format!("http://{address}"));
-    let controller = endpoint.map(|e| format!("http://127.0.0.1:{}", e.controller_port));
+    let controller = endpoint.map(|e| format!("unix://{}", e.socket.display()));
     let stdout = io::stdout();
     let mut output = stdout.lock();
     if json {

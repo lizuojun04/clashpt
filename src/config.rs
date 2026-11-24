@@ -64,17 +64,11 @@ pub fn secret() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn allocate_port(exclude: Option<u16>) -> Result<u16> {
-    loop {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
-        if Some(port) != exclude {
-            return Ok(port);
-        }
-    }
+fn allocate_port() -> Result<u16> {
+    Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
 }
 
-fn endpoints(map: &Mapping, previous: Option<&Endpoint>) -> Result<Endpoint> {
+fn endpoints(map: &Mapping, previous: Option<&Endpoint>, socket: &Path) -> Result<Endpoint> {
     let mixed = match map.get("mixed-port") {
         None | Some(Value::Null) => None,
         Some(value) => {
@@ -83,34 +77,21 @@ fn endpoints(map: &Mapping, previous: Option<&Endpoint>) -> Result<Endpoint> {
             (port != 0).then_some(port)
         }
     };
-    let controller = match map.get("external-controller") {
-        None | Some(Value::Null) => None,
-        Some(value) => {
-            let address = value.as_str().context("external-controller must be a host:port string")?.trim();
-            if address.is_empty() {
-                None
-            } else {
-                let (_, port) = address.rsplit_once(':').context("external-controller must include a port")?;
-                let port = port.parse::<u16>().context("external-controller has an invalid port")?;
-                (port != 0).then_some(port)
-            }
-        }
-    };
-    ensure!(mixed.is_none() || mixed != controller, "mixed-port and external-controller must use different ports");
-
-    let controller = controller.or_else(|| previous.map(|e| e.controller_port).filter(|port| Some(*port) != mixed));
-    let mixed = mixed.or_else(|| previous.map(|e| e.mixed_port).filter(|port| Some(*port) != controller));
-    let controller_port = controller.map_or_else(|| allocate_port(mixed), Ok)?;
-    let mixed_port = mixed.map_or_else(|| allocate_port(Some(controller_port)), Ok)?;
+    let mixed_port = mixed.or_else(|| previous.map(|e| e.mixed_port))
+        .map_or_else(allocate_port, Ok)?;
     let secret = previous.map(|e| e.secret.clone()).map_or_else(secret, Ok)?;
-    Ok(Endpoint { controller_port, mixed_port, secret })
+    let proxy_password = match previous {
+        Some(e) if !e.proxy_password.is_empty() => e.proxy_password.clone(),
+        _ => self::secret()?,
+    };
+    Ok(Endpoint { mixed_port, socket: socket.into(), secret, proxy_password })
 }
 
 fn set(map: &mut Mapping, key: &str, value: impl Into<Value>) {
     map.insert(Value::from(key), value.into());
 }
 
-pub fn runtime(raw: &[u8], previous: Option<&Endpoint>, tun_enabled: bool, source_dir: Option<&Path>) -> Result<(Endpoint, Vec<u8>)> {
+pub fn runtime(raw: &[u8], previous: Option<&Endpoint>, tun_enabled: bool, source_dir: Option<&Path>, socket: &Path) -> Result<(Endpoint, Vec<u8>)> {
     let mut document: Value = serde_yaml::from_slice(raw)
         .map_err(|error| match error.location() {
             Some(location) => anyhow::anyhow!("invalid YAML at line {}, column {}", location.line(), location.column()),
@@ -121,7 +102,7 @@ pub fn runtime(raw: &[u8], previous: Option<&Endpoint>, tun_enabled: bool, sourc
     ensure!(["proxy-groups", "rules"].iter().any(|key| map.contains_key(*key)),
         "expected a complete Mihomo configuration with proxy-groups or rules");
 
-    let endpoint = endpoints(map, previous)?;
+    let endpoint = endpoints(map, previous, socket)?;
 
     for key in ["port", "socks-port", "redir-port", "tproxy-port", "listeners",
         "external-controller-tls", "external-controller-unix", "external-controller-pipe",
@@ -133,14 +114,21 @@ pub fn runtime(raw: &[u8], previous: Option<&Endpoint>, tun_enabled: bool, sourc
     set(map, "allow-lan", false);
     set(map, "bind-address", "127.0.0.1");
     set(map, "mixed-port", endpoint.mixed_port);
-    if tun_enabled {
-        map.remove("external-controller");
-        map.remove("secret");
-        set(map, "external-controller-unix", crate::system::CORE_SOCKET);
-    } else {
-        set(map, "external-controller", format!("127.0.0.1:{}", endpoint.controller_port));
-        set(map, "secret", endpoint.secret.as_str());
-    }
+    map.remove("external-controller");
+    map.remove("secret");
+    let control_socket = if tun_enabled { crate::system::CORE_SOCKET } else {
+        socket.to_str().context("control socket path must be UTF-8")?
+    };
+    set(map, "external-controller-unix", control_socket);
+    map.remove("skip-auth-prefixes");
+    let mut accounts = match map.remove("authentication") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Sequence(accounts)) => accounts,
+        _ => bail!("authentication must be a sequence"),
+    };
+    accounts.retain(|account| !account.as_str().is_some_and(|s| s.starts_with("clashpt:")));
+    accounts.push(Value::String(format!("clashpt:{}", endpoint.proxy_password)));
+    set(map, "authentication", Value::Sequence(accounts));
 
     if let Some(dns) = map.get_mut("dns").and_then(Value::as_mapping_mut) {
         dns.remove("listen");
