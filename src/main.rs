@@ -59,6 +59,8 @@ enum Command {
     /// Install or update the system service as an administrator
     #[command(subcommand)]
     System(System),
+    #[command(hide = true)]
+    InstallSettings,
 }
 
 #[derive(Subcommand)]
@@ -130,6 +132,10 @@ enum System {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if matches!(cli.command, Command::InstallSettings) {
+        return settings::Settings::install_defaults();
+    }
+
     if let Command::System(System::Apply { config, uid, settings }) = cli.command {
         let uid = uid.or_else(|| std::env::var("SUDO_UID").ok()?.parse().ok())
             .context("pass --uid with the UID of the user who will control the service")?;
@@ -258,7 +264,7 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Command::System(_) => unreachable!(),
+        Command::System(_) | Command::InstallSettings => unreachable!(),
     }
     Ok(())
 }

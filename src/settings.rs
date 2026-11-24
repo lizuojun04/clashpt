@@ -62,7 +62,44 @@ impl Settings {
             }
             Err(error) => return Err(error).with_context(|| format!("read {}", file.display())),
         };
-        let overrides: Option<Mapping> = serde_yaml::from_str(&content)
+        Self::parse(&content, &file)
+    }
+
+    pub(crate) fn install_defaults() -> Result<()> {
+        let file = default_path().context("could not locate the ClashPT settings directory")?;
+        Self::parse(DEFAULT_SETTINGS, &file).context("validate built-in ClashPT settings")?;
+        let content = match fs::read(&file) {
+            Ok(content) => Some(content),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).with_context(|| format!("read {}", file.display())),
+        };
+
+        if let Some(content) = content {
+            let validation = std::str::from_utf8(&content)
+                .context("settings must use UTF-8")
+                .and_then(|yaml| Self::parse(yaml, &file));
+            match validation {
+                Ok(_) => {
+                    println!("Kept compatible settings at {}", file.display());
+                    return Ok(());
+                }
+                Err(error) => {
+                    let backup = file.with_extension("yaml.bak");
+                    crate::config::write(&backup, &content)?;
+                    println!("Backed up incompatible settings to {} ({error:#})", backup.display());
+                }
+            }
+        } else {
+            crate::config::private_dir(file.parent().context("missing settings directory")?)?;
+        }
+
+        crate::config::write(&file, DEFAULT_SETTINGS.as_bytes())?;
+        println!("Installed default settings at {}", file.display());
+        Ok(())
+    }
+
+    fn parse(content: &str, file: &Path) -> Result<Self> {
+        let overrides: Option<Mapping> = serde_yaml::from_str(content)
             .with_context(|| format!("parse {}", file.display()))?;
         let mut defaults: Mapping = serde_yaml::from_str(DEFAULT_SETTINGS)
             .context("read built-in ClashPT settings")?;
