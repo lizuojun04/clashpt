@@ -123,34 +123,14 @@ impl Service {
         Ok(file)
     }
 
-    fn runtime_identity(&self) -> Result<(PathBuf, PathBuf, u64, u64)> {
-        use std::os::unix::fs::MetadataExt;
-        let meta = fs::metadata(&self.dir)?;
-        Ok((self.dir.clone(), std::env::current_exe()?, meta.dev(), meta.ino()))
-    }
-
-    fn record_directory(&self) -> Result<()> {
-        let marker = self.dir.join(".clashpt-runtime");
-        if !marker.exists() && ["profile.json", "process.json", "validate.log", "mihomo.log"]
-            .iter().all(|name| !self.dir.join(name).exists()) {
-            config::write_json(&marker, &self.runtime_identity()?)?;
-        }
-        Ok(())
-    }
-
     pub fn uninstall_runtime(&self) -> Result<()> {
         let _lock = self.lock()?;
-        let marker = self.dir.join(".clashpt-runtime");
-        if optional_json(&marker)?.as_ref() != Some(&self.runtime_identity()?) {
-            ensure!(!self.process_path().exists(), "unregistered running instance; stop it before uninstalling");
-            return Ok(());
-        }
         let profiles = self.profiles()?;
         self.stop_locked()?;
         for profile in profiles.profiles.values() {
             for (parent, name, files) in [
                 (self.dir.clone(), Some(&profile.generation), &["source.yaml", "config.yaml"][..]),
-                (self.dir.join("core"), profile.core.as_ref(), &["cache.db"][..]),
+                (self.dir.join("core"), profile.core.as_ref(), &["cache.db", "geoip.metadb", "geoip.dat", "geosite.dat", "ASN.mmdb", "Country.mmdb"][..]),
             ] {
                 let Some(name) = name else { continue };
                 let directory = parent.join(name);
@@ -182,14 +162,19 @@ impl Service {
     }
 
     fn profiles(&self) -> Result<Profiles> {
-        match optional_json(&self.profile_path())? {
-            Some(StoredProfiles::Current(profiles)) => Ok(profiles),
+        let mut profiles = match optional_json(&self.profile_path())? {
+            Some(StoredProfiles::Current(profiles)) => profiles,
             Some(StoredProfiles::Legacy(profile)) => {
                 let name = String::from("default");
-                Ok(Profiles { active: Some(name.clone()), profiles: BTreeMap::from([(name, profile)]) })
+                Profiles { active: Some(name.clone()), profiles: BTreeMap::from([(name, profile)]) }
             }
-            None => Ok(Profiles::default()),
+            None => Profiles::default(),
+        };
+        if !profiles.profiles.is_empty() {
+            let socket = self.control_socket()?;
+            for profile in profiles.profiles.values_mut() { profile.endpoint.socket = socket.clone(); }
         }
+        Ok(profiles)
     }
 
     pub fn profile(&self) -> Result<Option<Profile>> {
@@ -212,11 +197,26 @@ impl Service {
         self.dir.join(&profile.generation).join("config.yaml")
     }
 
-    fn command(&self, profile: &Profile) -> Command {
+    fn command(&self, profile: &Profile) -> Result<Command> {
         let mut command = Command::new(&self.mihomo);
         let mut core_dir = self.dir.join("core");
         if let Some(core) = &profile.core {
             core_dir.push(core);
+        }
+        let exe = std::env::current_exe()?;
+        if let Some(prefix) = exe.parent().and_then(Path::parent) {
+            let seed = prefix.join("share/clashpt/geodata");
+            if seed.is_dir() {
+                for name in ["geoip.metadb", "geoip.dat", "geosite.dat", "ASN.mmdb"] {
+                    let dest = core_dir.join(name);
+                    if dest.try_exists()? { continue; }
+                    if name == "geoip.metadb" && (core_dir.join("Country.mmdb").try_exists()? ||
+                        core_dir.join("geoip.db").try_exists()?) { continue; }
+                    let mut file = tempfile::NamedTempFile::new_in(&core_dir)?;
+                    io::copy(&mut File::open(seed.join(name))?, file.as_file_mut())?;
+                    file.persist_noclobber(dest)?;
+                }
+            }
         }
         command.arg("-d").arg(core_dir).arg("-f").arg(self.config_path(profile));
         if let Source::File { base, .. } = &profile.source {
@@ -224,7 +224,7 @@ impl Service {
         } else {
             command.env_remove("SAFE_PATHS");
         }
-        command
+        Ok(command)
     }
 
     pub fn import(&self, path: &Path, name: Option<&str>) -> Result<String> {
@@ -363,7 +363,6 @@ impl Service {
     }
 
     fn save(&self, mut profiles: Profiles, name: Option<&str>, raw: &[u8], source: Source) -> Result<String> {
-        self.record_directory()?;
         let name = self.save_name(&profiles, name, &source, raw)?;
         let existing = profiles.profiles.get(&name);
         let previous = profiles.active().cloned();
@@ -389,7 +388,7 @@ impl Service {
         config::write(&self.config_path(&candidate), &runtime)?;
 
         let log = append_log(&self.dir.join("validate.log"))?;
-        let validated = self.command(&candidate).arg("-t")
+        let validated = self.command(&candidate)?.arg("-t")
             .stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log).status()
             .context("run Mihomo configuration validation")?;
         ensure!(validated.success(), "Mihomo rejected the configuration. See {}", self.dir.join("validate.log").display());
@@ -457,19 +456,39 @@ impl Service {
         let _lock = self.lock()?;
         let profile = self.profile()?.context("import a configuration first")?;
         if self.running_process()?.is_some() {
-            ensure!(Client::new(profile.endpoint)?.ready(), "Mihomo is running but its API is unavailable");
-            return Ok(());
+            if Client::new(profile.endpoint.clone())?.ready() && !self.refresh_runtime(&profile)? {
+                return Ok(());
+            }
+            self.stop_locked()?;
+
         }
         self.start_locked(&profile)
     }
 
+    fn refresh_runtime(&self, profile: &Profile) -> Result<bool> {
+        // The copied runtime YAML can still contain the previous host's controller.
+        let path = self.config_path(profile);
+        let mut yaml: serde_yaml::Mapping = serde_yaml::from_slice(&config::local(&path)?)?;
+        let socket = serde_yaml::Value::String(profile.endpoint.socket.to_str().context("invalid socket path")?.into());
+        let mut changed = false;
+        for key in ["external-controller", "secret", "authentication", "skip-auth-prefixes"] {
+            changed |= yaml.remove(key).is_some();
+        }
+        if yaml.get("external-controller-unix") != Some(&socket) {
+            yaml.insert("external-controller-unix".into(), socket);
+            changed = true;
+        }
+        if changed { config::write(&path, serde_yaml::to_string(&yaml)?.as_bytes())?; }
+        Ok(changed)
+    }
+
     fn start_locked(&self, profile: &Profile) -> Result<()> {
-        ensure!(profile.endpoint.socket == self.control_socket()?, "re-import this profile to enable secure control");
+        self.refresh_runtime(profile)?;
         let port = profile.endpoint.mixed_port;
         TcpListener::bind(("127.0.0.1", port)).with_context(|| format!("local port {port} is occupied"))?;
         let log_path = self.dir.join("mihomo.log");
         let log = append_log(&log_path)?;
-        let mut command = self.command(profile);
+        let mut command = self.command(profile)?;
         // Detach from the invoking terminal, including when launched over SSH.
         unsafe {
             command.pre_exec(|| {

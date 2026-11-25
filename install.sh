@@ -5,25 +5,6 @@ die() {
     exit 1
 }
 
-trusted_path() {
-    # Ordinary user installs may use shared writable directories.
-    checked=$1
-    first=yes
-    while :; do
-        [ ! -L "$checked" ] || die "symbolic link in installation path: $checked"
-        owner=$(stat -c %u -- "$checked") || die "cannot inspect $checked"
-        [ "$owner" = 0 ] || [ "$owner" = "$(id -u)" ] || die "untrusted owner: $checked"
-        mode=$(stat -c %a -- "$checked")
-        if { [ ! -d "$checked" ] || [ "$(id -u)" = 0 ]; } && [ $((0$mode & 022)) -ne 0 ]; then
-            [ "$first" = no ] && [ -d "$checked" ] && [ $((0$mode & 01000)) -ne 0 ] ||
-                die "writable installation path: $checked"
-        fi
-        [ "$checked" != / ] || break
-        checked=$(dirname -- "$checked")
-        first=no
-    done
-}
-
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [--prefix DIR] [--version TAG | --from-build FILE] [--gh-proxy URL]
@@ -113,7 +94,16 @@ main() {
     trap 'rm -rf -- "$work" "${bin_stage:-$work}" "${shell_stage:-$work}"' EXIT
     trap 'exit 1' HUP INT TERM
 
-    if [ -n "$from_build" ]; then
+    bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    offline=no
+    if [ -f "$0" ] && [ -z "$from_build" ] && [ -f "$bundle/SHA256SUMS" ] && [ -x "$bundle/clashpt" ] && [ -x "$bundle/mihomo" ]; then
+        offline=yes
+        (cd "$bundle" && sha256sum -c SHA256SUMS) || die 'invalid offline package'
+        binary=$bundle/clashpt
+        mihomo=$bundle/mihomo
+        zsh_script=$bundle/clashpt.zsh
+        bash_script=$bundle/clashpt.bash
+    elif [ -n "$from_build" ]; then
         case "$from_build" in /*) binary=$from_build ;; *) binary=$PWD/$from_build ;; esac
         script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || die 'could not find the source checkout'
         zsh_script=$script_dir/scripts/clashpt.zsh
@@ -148,25 +138,28 @@ main() {
     fi
     release=$("$binary" --version) || die 'ClashPT could not run on this machine'
 
-    mihomo_entry=$(awk -v arch="$arch" '
-        $1 == arch && NF == 4 && $2 ~ /^v[0-9][a-zA-Z0-9._-]*$/ && $3 ~ /^mihomo-[a-zA-Z0-9._-]+\.gz$/ {
-            print $2, $3, $4; count++
-        }
-        END {if (count != 1) exit 1}
-    ' "$mihomo_manifest") || die "no unique Mihomo release for $arch"
-    IFS=' ' read -r mihomo_version mihomo_asset mihomo_checksum <<EOF
+    if [ "$offline" = yes ]; then
+        mihomo_version=$("$mihomo" -v | head -n 1)
+    else
+        mihomo_entry=$(awk -v arch="$arch" '
+            $1 == arch && NF == 4 && $2 ~ /^v[0-9][a-zA-Z0-9._-]*$/ && $3 ~ /^mihomo-[a-zA-Z0-9._-]+\.gz$/ {
+                print $2, $3, $4; count++
+            }
+            END {if (count != 1) exit 1}
+        ' "$mihomo_manifest") || die "no unique Mihomo release for $arch"
+        IFS=' ' read -r mihomo_version mihomo_asset mihomo_checksum <<EOF
 $mihomo_entry
 EOF
-    mihomo=$work/mihomo
-    download "https://github.com/MetaCubeX/mihomo/releases/download/$mihomo_version/$mihomo_asset" "$work/$mihomo_asset"
-    check_sha256 "$mihomo_checksum" "$work/$mihomo_asset"
-    gzip -dc -- "$work/$mihomo_asset" > "$mihomo" || die 'could not decompress Mihomo'
-    chmod 755 "$mihomo"
-    "$mihomo" -v >/dev/null || die 'the downloaded Mihomo could not run on this machine'
+        mihomo=$work/mihomo
+        download "https://github.com/MetaCubeX/mihomo/releases/download/$mihomo_version/$mihomo_asset" "$work/$mihomo_asset"
+        check_sha256 "$mihomo_checksum" "$work/$mihomo_asset"
+        gzip -dc -- "$work/$mihomo_asset" > "$mihomo" || die 'could not decompress Mihomo'
+        chmod 755 "$mihomo"
+        "$mihomo" -v >/dev/null || die 'the downloaded Mihomo could not run on this machine'
+    fi
 
     mkdir -p -- "$prefix"
     prefix=$(realpath -e -- "$prefix")
-    trusted_path "$prefix"
     exec 9<"$prefix"
     printf 'Acquiring installation lock on %s\n' "$prefix" >&2
     flock -x 9
@@ -174,59 +167,24 @@ EOF
     bindir=$prefix/bin
     share=$prefix/share/clashpt
     shelldir=$share/shell
-    for dir in "$bindir" "$prefix/share" "$share" "$shelldir"; do
-        [ ! -L "$dir" ] || die "refusing symbolic link: $dir"
-    done
     mkdir -p -- "$bindir" "$shelldir"
-    for dir in "$bindir" "$shelldir"; do trusted_path "$dir"; done
-    receipt=$share/install.receipt
-    if [ -e "$receipt" ] || [ -L "$receipt" ]; then
-        trusted_path "$receipt"
-        [ ! -L "$receipt" ] && [ "$(sed -n '1p' "$receipt")" = "$prefix" ] ||
-            die 'invalid installation receipt'
-    fi
-    for rel in bin/clashpt bin/mihomo share/clashpt/shell/clashpt.bash share/clashpt/shell/clashpt.zsh; do
-        dest=$prefix/$rel
-        if [ -e "$dest" ] || [ -L "$dest" ]; then
-            [ -f "$dest" ] && [ ! -L "$dest" ] && [ -f "$receipt" ] ||
-                die "existing file has no installation receipt: $dest"
-            sum=$(sha256sum < "$dest")
-            grep -Fxq -- "${sum%% *}  $rel" "$receipt" || die "existing file was replaced: $dest"
-        fi
-    done
     bin_stage=$(mktemp -d "$bindir/.clashpt-install.XXXXXX")
     shell_stage=$(mktemp -d "$shelldir/.clashpt-install.XXXXXX")
     install -m 755 -- "$binary" "$bin_stage/clashpt"
     install -m 755 -- "$mihomo" "$bin_stage/mihomo"
     install -m 644 -- "$zsh_script" "$bash_script" "$shell_stage/"
-    case "${XDG_CONFIG_HOME:-}" in /*) settings=$XDG_CONFIG_HOME/clashpt/clashpt.yaml ;; *) settings=$HOME/.config/clashpt/clashpt.yaml ;; esac
-    own_settings=no
-    if [ ! -e "$settings" ] && [ ! -L "$settings" ]; then own_settings=yes
-    elif [ -f "$receipt" ] && [ -f "$settings" ]; then
-        sum=$(sha256sum < "$settings")
-        if grep -Fxq -- "${sum%% *}  $settings" "$receipt"; then own_settings=yes; fi
-    fi
     "$bin_stage/clashpt" install-settings || die 'could not install ClashPT settings'
-    {
-        printf '%s\n' "$prefix"
-        for name in clashpt mihomo; do
-            sum=$(sha256sum < "$bin_stage/$name")
-            printf '%s  bin/%s\n' "${sum%% *}" "$name"
+    if [ "$offline" = yes ]; then
+        mkdir -p -- "$share/geodata"
+        for file in "$bundle"/geodata/*; do
+            install -m 644 -- "$file" "$shell_stage/geodata.tmp"
+            mv -fT -- "$shell_stage/geodata.tmp" "$share/geodata/${file##*/}"
         done
-        for name in clashpt.zsh clashpt.bash; do
-            sum=$(sha256sum < "$shell_stage/$name")
-            printf '%s  share/clashpt/shell/%s\n' "${sum%% *}" "$name"
-        done
-        if [ "$own_settings" = yes ]; then sha256sum -- "$settings"; fi
-    } > "$shell_stage/receipt"
-    cp -- "$shell_stage/receipt" "$shell_stage/pending"
-    if [ -f "$receipt" ]; then tail -n +2 "$receipt" >> "$shell_stage/pending"; fi
-    mv -fT -- "$shell_stage/pending" "$receipt"
+    fi
     mv -fT -- "$bin_stage/mihomo" "$bindir/mihomo"
     mv -fT -- "$bin_stage/clashpt" "$bindir/clashpt"
     mv -fT -- "$shell_stage/clashpt.zsh" "$shelldir/clashpt.zsh"
     mv -fT -- "$shell_stage/clashpt.bash" "$shelldir/clashpt.bash"
-    mv -fT -- "$shell_stage/receipt" "$receipt"
     printf 'Installed Mihomo %s at %s\n' "$mihomo_version" "$bindir/mihomo"
     printf 'Installed %s at %s\n' "$release" "$bindir/clashpt"
 

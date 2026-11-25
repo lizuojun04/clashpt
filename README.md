@@ -22,7 +22,7 @@ curl --noproxy '*' -fsSL "$GH_PROXY/$RELEASE/install-gh-proxy.sh" |
   sh -s -- --version v0.1.1 --gh-proxy "$GH_PROXY"
 ```
 
-安装器默认下载最新的 ClashPT 发布包及其指定的 Mihomo 版本，并将两个二进制安装到 `~/.local/bin/`。安装器会登记受管文件。在同一安装前缀重新运行即可更新已登记且未被替换的文件。安装器会保留兼容的 `clashpt.yaml`，遇到不兼容的配置时会先备份为 `clashpt.yaml.bak`，再写入默认配置。
+安装器默认下载最新的 ClashPT 发布包及其指定的 Mihomo 版本，并将两个二进制安装到 `~/.local/bin/`。重复安装会更新程序并保留已有的 `clashpt.yaml`。
 
 把 `~/.local/bin` 加到 `PATH`。如果希望 `clashpt start/stop` 和 `clashpt proxy on/off` 更新当前终端的代理变量，在 Shell 配置文件中加入对应的加载命令，再重新打开终端。
 
