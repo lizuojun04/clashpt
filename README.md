@@ -6,7 +6,9 @@ ClashPT PC 是 Linux 个人电脑上的 Mihomo 代理管理工具，提供终端
 
 此发行包适用于 Linux x86_64。包内含 ClashPT、Mihomo v1.19.20、Bash/Zsh 集成，以及 GeoIP MMDB、GeoIP DAT、GeoSite 和 ASN 数据库。安装和本地地理规则校验均可离线完成。[下载 pc-v0.1.1](https://github.com/lizuojun04/clashpt/releases/tag/pc-v0.1.1)
 
-在能访问 GitHub 的机器上下载压缩包和校验文件：
+选择以下一种方式下载压缩包和校验文件。
+
+**直接从 GitHub 下载**
 
 ```sh
 release=https://github.com/lizuojun04/clashpt/releases/download/pc-v0.1.1
@@ -14,6 +16,20 @@ pkg=clashpt-pc-v0.1.1-linux-x86_64-offline.tar.gz
 curl -fL --retry 3 --connect-timeout 60 -O "$release/$pkg" &&
   curl -fL --retry 3 --connect-timeout 60 -O "$release/SHA256SUMS"
 ```
+
+**国内网络通过网关加速下载**
+
+直连 GitHub 较慢时，可以通过 `gh-proxy.org` 下载同一版本的两个文件。`--noproxy '*'` 让 curl 直连网关，即使终端里设置了本地代理也能使用。
+
+```sh
+GH_PROXY=https://gh-proxy.org
+release=https://github.com/lizuojun04/clashpt/releases/download/pc-v0.1.1
+pkg=clashpt-pc-v0.1.1-linux-x86_64-offline.tar.gz
+curl --noproxy '*' -fL --progress-bar --retry 3 --connect-timeout 60 -o "$pkg" "$GH_PROXY/$release/$pkg" &&
+  curl --noproxy '*' -fL --progress-bar --retry 3 --connect-timeout 60 -o SHA256SUMS "$GH_PROXY/$release/SHA256SUMS"
+```
+
+**校验并安装**
 
 如果目标电脑网络较慢，可通过 `scp` 将这两个文件传到目标电脑的同一目录。在该目录校验、解压并安装：
 
