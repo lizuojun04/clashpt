@@ -7,7 +7,7 @@ target=x86_64-unknown-linux-musl
 release=data/release
 archive=clashpt-linux-x86_64-with-mihomo.tar.gz
 version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)
-name=clashpt-v$version-shared-local-proxy-linux-x86_64-offline
+name=clashpt-pc-v$version-linux-x86_64-offline
 (cd "$release" && awk -v f="$archive" '$2 == f' SHA256SUMS-with-mihomo | sha256sum -c -)
 cargo zigbuild --release --locked --target "$target"
 work=$(mktemp -d "$release/.offline.XXXXXXXX")

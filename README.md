@@ -1,82 +1,53 @@
-# ClashPT
+# ClashPT PC
 
-ClashPT 是面向 Linux 的 Mihomo 管理工具。TUI 和 CLI 可以查看策略组、切换节点和查询运行状态。普通用户模式提供本地 HTTP/SOCKS 代理，系统模式通过 systemd 启用 TUN。
+ClashPT PC 是 Linux 个人电脑上的 Mihomo 代理管理工具，提供终端界面和命令行。默认代理地址是 `127.0.0.1:7890`，HTTP 和 SOCKS5 共用一个端口。同一台电脑上的其他用户也可以免密使用。导入的配置若指定非零 `mixed-port`，则使用该端口。
 
-## 安装
+## 安装 pc-v0.1.1
 
-### 一键安装或更新
+此发行包适用于 Linux x86_64。包内含 ClashPT、Mihomo v1.19.20、Bash/Zsh 集成，以及 GeoIP MMDB、GeoIP DAT、GeoSite 和 ASN 数据库。安装和本地地理规则校验均可离线完成。[下载 pc-v0.1.1](https://github.com/lizuojun04/clashpt/releases/tag/pc-v0.1.1)
 
-能够直连 GitHub 时，可以用下面的命令安装或更新 ClashPT：
-
-```sh
-curl -fsSL https://github.com/lizuojun04/clashpt/releases/latest/download/install.sh | sh
-```
-
-如果当前网络无法直连 GitHub，可以使用网关版安装器。`--gh-proxy` 将同一个网关用于 ClashPT 发布包、校验文件和配套的 Mihomo。`--noproxy '*'` 让 `curl` 直接连接网关，无需设置本地代理。
+在能访问 GitHub 的机器上下载压缩包和校验文件：
 
 ```sh
-GH_PROXY=https://gh-proxy.org
-RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.1
-
-curl --noproxy '*' -fsSL "$GH_PROXY/$RELEASE/install-gh-proxy.sh" |
-  sh -s -- --version v0.1.1 --gh-proxy "$GH_PROXY"
+release=https://github.com/lizuojun04/clashpt/releases/download/pc-v0.1.1
+pkg=clashpt-pc-v0.1.1-linux-x86_64-offline.tar.gz
+curl -fL --retry 3 --connect-timeout 60 -O "$release/$pkg" &&
+  curl -fL --retry 3 --connect-timeout 60 -O "$release/SHA256SUMS"
 ```
 
-安装器默认下载最新的 ClashPT 发布包及其指定的 Mihomo 版本，并将两个二进制安装到 `~/.local/bin/`。重复安装会更新程序并保留已有的 `clashpt.yaml`。
+如果目标电脑网络较慢，可通过 `scp` 将这两个文件传到目标电脑的同一目录。在该目录校验、解压并安装：
 
-把 `~/.local/bin` 加到 `PATH`。如果希望 `clashpt start/stop` 和 `clashpt proxy on/off` 更新当前终端的代理变量，在 Shell 配置文件中加入对应的加载命令，再重新打开终端。
-
-在 `~/.bashrc` 中加入：
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-source "$HOME/.local/share/clashpt/shell/clashpt.bash"
+```sh
+sha256sum -c SHA256SUMS &&
+  tar -xzf clashpt-pc-v0.1.1-linux-x86_64-offline.tar.gz &&
+  sh clashpt-pc-v0.1.1-linux-x86_64-offline/install.sh
 ```
 
-在 `~/.zshrc` 中加入：
+默认安装到 `~/.local/bin`。按所用 Shell 选择以下两行，加入启动文件并在当前终端执行一次。
+
+**Zsh**（`~/.zshrc`）
 
 ```zsh
 export PATH="$HOME/.local/bin:$PATH"
 source "$HOME/.local/share/clashpt/shell/clashpt.zsh"
 ```
 
-### 下载含 Mihomo 的完整包
-
-[GitHub Release](https://github.com/lizuojun04/clashpt/releases/tag/v0.1.1) 提供 Linux `x86_64` 和 `aarch64` 完整包。包内包含 `clashpt`、配套的 `mihomo`、`clashpt.bash` 和 `clashpt.zsh`。可以用 `curl` 或 `wget` 直接经网关下载，再解压手动使用。
-
-```sh
-GH_PROXY=https://gh-proxy.org
-RELEASE=https://github.com/lizuojun04/clashpt/releases/download/v0.1.1
-ASSET="clashpt-linux-$(uname -m)-with-mihomo.tar.gz"
-URL="$GH_PROXY/$RELEASE/$ASSET"
-
-# curl 和 wget 任选一个。
-curl --noproxy '*' -fsSLO "$URL"
-# wget --no-proxy -O "$ASSET" "$URL"
-
-curl --noproxy '*' -fsSLO "$GH_PROXY/$RELEASE/SHA256SUMS-with-mihomo"
-awk -v asset="$ASSET" '$2 == asset' SHA256SUMS-with-mihomo | sha256sum -c - &&
-  tar -xzf "$ASSET"
-```
-
-解压后可直接运行 `./clashpt --mihomo "$PWD/mihomo" status`，使用包内配套的 Mihomo。
-
-### 从源码安装
-
-准备好 Rust 工具链，然后在项目根目录执行：
-
-```sh
-cargo build --release --locked
-sh install.sh --from-build target/release/clashpt
-```
-
-如果已有 Mihomo，且只需要编译并安装 ClashPT 二进制，也可以运行：
+**Bash**（`~/.bashrc`）
 
 ```bash
-cargo install --path . --locked
+export PATH="$HOME/.local/bin:$PATH"
+source "$HOME/.local/share/clashpt/shell/clashpt.bash"
 ```
 
-普通用户模式默认从 `PATH` 查找 `mihomo`，也可以用 `--mihomo /path/to/mihomo` 或 `CLASHPT_MIHOMO` 指定路径。系统模式首次执行 `system apply` 时，会将指定的 Mihomo 复制到 `/etc/clashpt/mihomo`。开发时也可在仓库里运行 `bash scripts/run.sh status`。
+## 卸载
+
+从解压目录的上一级执行：
+
+```sh
+sh clashpt-pc-v0.1.1-linux-x86_64-offline/uninstall.sh
+```
+
+输入 `y` 删除 ClashPT 和 Mihomo，输入 `c` 保留 Mihomo，直接回车取消。两种卸载方式都会清除 ClashPT 保存的订阅、配置、数据库及 Shell 集成文件。卸载后，从 Shell 启动文件中移除加载 `clashpt.bash` 或 `clashpt.zsh` 的那一行。自定义安装前缀时，给卸载脚本传入相同的 `--prefix DIR`。
 
 ## 普通用户模式
 
@@ -114,17 +85,9 @@ clashpt nodes list --json
 clashpt status --json
 ```
 
-## zsh 代理环境变量
+## 浏览器和终端代理
 
-从此分支构建的版本默认监听 `127.0.0.1:7890`，同机用户可免密使用 HTTP/SOCKS 代理。配置中的非零 `mixed-port` 可以覆盖默认端口。加载 Shell 集成后使用 `clashpt proxy on`，或用 `clashpt proxy on --shell` 查看代理 URL。
-
-要在成功启停内核时自动设置或清理变量，可以在 `~/.zshrc` 中再加载集成脚本。将路径换成仓库的实际位置。
-
-```zsh
-source /path/to/clashpt/scripts/clashpt.zsh
-```
-
-加载脚本后，`clashpt start/stop` 会同步更新当前 zsh 的代理变量，`clashpt proxy on/off` 只操作变量并打印结果。代理端口取自已导入的配置。`clash` 也可以作为命令名使用。直接执行二进制时，`proxy on/off` 会在框中显示可执行的命令。用 `proxy on --shell` 或 `proxy off --shell` 可获取纯 `export` 或 `unset`，方便脚本调用。
+Firefox 等应用可手动选择 HTTP 代理，主机填 `127.0.0.1`，端口取自 `clashpt status`，用户名和密码留空。加载 Shell 集成后，`clashpt start` 和 `clashpt stop` 会同步设置或清除当前终端的代理变量。`clashpt proxy on/off` 可单独切换变量。
 
 ## TUI 配置
 
