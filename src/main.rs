@@ -10,12 +10,12 @@ mod tui;
 
 use anyhow::{Context, Result, bail, ensure};
 use api::Client;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use service::Service;
 use std::{io::{self, Write}, path::PathBuf};
 
 #[derive(Parser)]
-#[command(version, about = "Manage Mihomo from the terminal")]
+#[command(version, arg_required_else_help = true, about = "Manage Mihomo from the terminal")]
 struct Cli {
     #[arg(long, global = true, env = "CLASHPT_DATA_DIR")]
     data_dir: Option<PathBuf>,
@@ -24,7 +24,10 @@ struct Cli {
     #[arg(long, global = true, help = "Use the system service with TUN")]
     system: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+    /// Print the shell completion script
+    #[arg(long, value_name = "SHELL", value_parser = ["zsh"])]
+    completion: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -136,13 +139,21 @@ enum System {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    if matches!(cli.command, Command::InstallSettings) {
+    if cli.completion.is_some() {
+        ensure!(cli.command.is_none(), "--completion must be used without a subcommand");
+        // Sourcing the generated script registers its function through compdef.
+        println!("(( $+functions[compdef] )) || {{ autoload -Uz compinit && compinit -i; }}");
+        clap_complete::generate(clap_complete::shells::Zsh, &mut Cli::command(), "clashpt", &mut io::stdout());
+        return Ok(());
+    }
+    let command = cli.command.context("specify a command or --completion zsh")?;
+    if matches!(command, Command::InstallSettings) {
         return settings::Settings::install_defaults();
     }
 
-    if let Command::System(System::Remove { keep_mihomo }) = cli.command { return system::remove(keep_mihomo); }
+    if let Command::System(System::Remove { keep_mihomo }) = command { return system::remove(keep_mihomo); }
 
-    if let Command::System(System::Apply { config, uid, settings }) = cli.command {
+    if let Command::System(System::Apply { config, uid, settings }) = command {
         let uid = uid.or_else(|| std::env::var("SUDO_UID").ok()?.parse().ok())
             .context("pass --uid with the UID of the user who will control the service")?;
         let workers = match settings {
@@ -152,11 +163,11 @@ fn run(cli: Cli) -> Result<()> {
         return system::apply(&config, &cli.mihomo, uid, workers);
     }
 
-    if let Command::System(System::ServeApi { credentials, socket }) = cli.command {
+    if let Command::System(System::ServeApi { credentials, socket }) = command {
         return gateway::run(&credentials, &socket);
     }
 
-    if let Command::Proxy(Proxy::Off(ref output)) = cli.command {
+    if let Command::Proxy(Proxy::Off(ref output)) = command {
         return proxy::print(None, output);
     }
 
@@ -168,7 +179,7 @@ fn run(cli: Cli) -> Result<()> {
         }
     };
 
-    match cli.command {
+    match command {
         Command::Tui { config } => {
             let (backend, workers) = if let Some(service) = &service {
                 (tui::Backend::user(service.clone()), None)
@@ -279,7 +290,7 @@ fn run(cli: Cli) -> Result<()> {
 fn main() {
     let cli = Cli::parse();
     let profile_operation = matches!(&cli.command,
-        Command::Profile(Profile::Import { .. } | Profile::Subscribe { .. } | Profile::Delete { .. }));
+        Some(Command::Profile(Profile::Import { .. } | Profile::Subscribe { .. } | Profile::Delete { .. })));
     if let Err(error) = run(cli) {
         let message = format!("clashpt: {error:#}");
         if !profile_operation || status::print_failure(&message).is_err() {

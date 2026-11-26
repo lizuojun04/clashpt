@@ -126,3 +126,10 @@ function clashpt {
 function clash {
     clashpt "$@"
 }
+
+if [[ -o interactive ]]; then
+    source <(_clashpt_exec --completion zsh)
+    if (( $+functions[_clashpt] && $+functions[compdef] )); then
+        compdef _clashpt clash
+    fi
+fi

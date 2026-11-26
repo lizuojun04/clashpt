@@ -159,6 +159,7 @@ EOF
     fi
 
     mkdir -p -- "$prefix"
+    requested_prefix=$prefix
     prefix=$(realpath -e -- "$prefix")
     exec 9<"$prefix"
     printf 'Acquiring installation lock on %s\n' "$prefix" >&2
@@ -189,9 +190,15 @@ EOF
     printf 'Installed %s at %s\n' "$release" "$bindir/clashpt"
 
     printf '\nAdd to ~/.bashrc or ~/.zshrc for shell integration:\n'
-    printf '  export PATH=%s:"$PATH"\n' "$(quote_shell "$bindir")"
-    printf '  Bash: source %s\n' "$(quote_shell "$shelldir/clashpt.bash")"
-    printf '  Zsh:  source %s\n' "$(quote_shell "$shelldir/clashpt.zsh")"
+    if [ "$requested_prefix" = "$HOME/.local" ]; then
+        printf '%s\n' '  export PATH="$HOME/.local/bin:$PATH"' \
+            '  Bash: source "$HOME/.local/share/clashpt/shell/clashpt.bash"' \
+            '  Zsh:  source "$HOME/.local/share/clashpt/shell/clashpt.zsh"'
+    else
+        printf '  export PATH=%s:"$PATH"\n' "$(quote_shell "$bindir")"
+        printf '  Bash: source %s\n' "$(quote_shell "$shelldir/clashpt.bash")"
+        printf '  Zsh:  source %s\n' "$(quote_shell "$shelldir/clashpt.zsh")"
+    fi
 }
 
 main "$@"

@@ -48,6 +48,12 @@ export PATH="$HOME/.local/bin:$PATH"
 source "$HOME/.local/share/clashpt/shell/clashpt.zsh"
 ```
 
+当前分支的 zsh 集成会同时启用 Tab 补全，例如输入 `clashpt profile ` 后按 Tab 可列出配置操作。如果只需补全，可在 `~/.zshrc` 中单独加载：
+
+```zsh
+source <(clashpt --completion zsh)
+```
+
 **Bash**（`~/.bashrc`）
 
 ```bash
@@ -137,7 +143,11 @@ clashpt profile delete B
 
 第一份保存的配置会成为当前配置。之后保存其他名称会保留当前选择。省略 `--name` 时，重复导入同一文件路径或同一订阅 URL 会更新对应的配置，其他来源自动获得独立名称。要明确替换某份配置，可以指定它的名称。
 
-在 TUI 中按 `6` 打开 Profiles，用方向键选中配置，再按 `Enter` 激活。Mihomo 运行时会重启以应用选中的配置，现有连接可能中断。如果两个配置的代理端口不同，已启用代理的 zsh 终端需要重新执行 `clashpt proxy on` 来更新环境变量。
+**修改本地 YAML 后需要重新导入。** 例如，修改 B 的 `config.yaml` 后，执行 `clashpt profile import ./config.yaml --name B`。如果 A 来自订阅链接，执行 `clashpt profile update A` 可重新下载订阅内容。更新当前配置时，正在运行的 Mihomo 会重启并应用改动；更新其他配置时，改动在下次切换到它时生效。
+
+**切换订阅会一起切换节点、策略组、规则和代理端口。** 执行 `clashpt profile use A`，或在 TUI 中按 `6` 打开 Profiles，选中 A 后按 `Enter`。正在运行的 Mihomo 会重启，现有连接可能中断。切换后可用 `clashpt status` 查看当前代理地址。
+
+如果新旧配置端口不同，已加载 Bash/Zsh 集成且正在使用旧配置代理变量的当前终端，会在 `profile use` 完成或退出 TUI 后自动同步。重新导入或刷新订阅后，以及在其他已打开的终端中，可执行 `clashpt proxy on` 刷新代理变量。Firefox 等应用中手动填写的端口需要手动修改。
 
 在 Profiles 按 `Delete` 或 `x`，再按 `y` 确认删除。删除当前配置（包括 `default`）时，会选择按名称排序后的第一份剩余配置。删掉最后一份时会停止 Mihomo，并清空当前选择。
 
