@@ -2,17 +2,17 @@
 
 ClashPT PC 是 Linux 个人电脑上的 Mihomo 代理管理工具，提供终端界面和命令行。默认代理地址是 `127.0.0.1:7890`，HTTP 和 SOCKS5 共用一个端口。同一台电脑上的其他用户也可以免密使用。导入的配置若指定非零 `mixed-port`，则使用该端口。
 
-## 安装 pc-v0.1.1
+## 安装 pc-v0.1.2
 
-此发行包适用于 Linux x86_64。包内含 ClashPT、Mihomo v1.19.20、Bash/Zsh 集成，以及 GeoIP MMDB、GeoIP DAT、GeoSite 和 ASN 数据库。安装和本地地理规则校验均可离线完成。[下载 pc-v0.1.1](https://github.com/lizuojun04/clashpt/releases/tag/pc-v0.1.1)
+此发行包适用于 Linux x86_64。包内含 ClashPT、Mihomo v1.19.20、Bash/Zsh 集成，以及 GeoIP MMDB、GeoIP DAT、GeoSite 和 ASN 数据库。安装和本地地理规则校验均可离线完成。[下载 pc-v0.1.2](https://github.com/lizuojun04/clashpt/releases/tag/pc-v0.1.2)
 
 选择以下一种方式下载压缩包和校验文件。
 
 **直接从 GitHub 下载**
 
 ```sh
-release=https://github.com/lizuojun04/clashpt/releases/download/pc-v0.1.1
-pkg=clashpt-pc-v0.1.1-linux-x86_64-offline.tar.gz
+release=https://github.com/lizuojun04/clashpt/releases/download/pc-v0.1.2
+pkg=clashpt-pc-v0.1.2-linux-x86_64-offline.tar.gz
 curl -fL --retry 3 --connect-timeout 60 -O "$release/$pkg" &&
   curl -fL --retry 3 --connect-timeout 60 -O "$release/SHA256SUMS"
 ```
@@ -23,8 +23,8 @@ curl -fL --retry 3 --connect-timeout 60 -O "$release/$pkg" &&
 
 ```sh
 GH_PROXY=https://gh-proxy.org
-release=https://github.com/lizuojun04/clashpt/releases/download/pc-v0.1.1
-pkg=clashpt-pc-v0.1.1-linux-x86_64-offline.tar.gz
+release=https://github.com/lizuojun04/clashpt/releases/download/pc-v0.1.2
+pkg=clashpt-pc-v0.1.2-linux-x86_64-offline.tar.gz
 curl --noproxy '*' -fL --progress-bar --retry 3 --connect-timeout 60 -o "$pkg" "$GH_PROXY/$release/$pkg" &&
   curl --noproxy '*' -fL --progress-bar --retry 3 --connect-timeout 60 -o SHA256SUMS "$GH_PROXY/$release/SHA256SUMS"
 ```
@@ -35,8 +35,8 @@ curl --noproxy '*' -fL --progress-bar --retry 3 --connect-timeout 60 -o "$pkg" "
 
 ```sh
 sha256sum -c SHA256SUMS &&
-  tar -xzf clashpt-pc-v0.1.1-linux-x86_64-offline.tar.gz &&
-  sh clashpt-pc-v0.1.1-linux-x86_64-offline/install.sh
+  tar -xzf clashpt-pc-v0.1.2-linux-x86_64-offline.tar.gz &&
+  sh clashpt-pc-v0.1.2-linux-x86_64-offline/install.sh
 ```
 
 默认安装到 `~/.local/bin`。按所用 Shell 选择以下两行，加入启动文件并在当前终端执行一次。
@@ -66,7 +66,7 @@ source "$HOME/.local/share/clashpt/shell/clashpt.bash"
 从解压目录的上一级执行：
 
 ```sh
-sh clashpt-pc-v0.1.1-linux-x86_64-offline/uninstall.sh
+sh clashpt-pc-v0.1.2-linux-x86_64-offline/uninstall.sh
 ```
 
 输入 `y` 删除 ClashPT 和 Mihomo，输入 `c` 保留 Mihomo，直接回车取消。两种卸载方式都会清除 ClashPT 保存的订阅、配置、数据库及 Shell 集成文件。卸载后，从 Shell 启动文件中移除加载 `clashpt.bash` 或 `clashpt.zsh` 的那一行。自定义安装前缀时，给卸载脚本传入相同的 `--prefix DIR`。
